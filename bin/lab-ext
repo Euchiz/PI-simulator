@@ -1,186 +1,225 @@
 #!/usr/bin/env bash
-# lab-ext — manage EXTERNAL lab agents (currently: codex). A friendly front-end for
-# the lab-codex daemon so you don't have to remember setsid/kill/tail incantations.
+# lab-ext — manage EXTERNAL lab agents: a coding CLI (Codex, Gemini CLI, Aider, opencode, …)
+# run as a lab peer that any session can ask for an independent review.
 #
-#   lab ext                         list external agents + LIVE/down status
-#   lab ext codex start             launch the codex reviewer daemon (detached, survives your shell)
-#   lab ext codex stop              stop it (SIGTERM, then SIGKILL if needed)
-#   lab ext codex restart           stop + start
-#   lab ext codex status            running? pid, uptime, inbox queue, last log lines
-#   lab ext codex logs [-f]         show (or follow) the daemon log
-#   lab ext codex chat [args]       open an interactive codex terminal. A "<subject>" that matches a
-#                                   thread RESUMES that conversation; else --new | --pick | --last |
-#                                   <session-id>. No arg = continue the most recent. Words = prompt.
-#   lab ext codex threads           list active conversation threads (subject -> session -> last used)
-#   lab ext codex send <subj> <body>   ask codex; the SUBJECT is the thread key (same subject continues it)
-set -euo pipefail
+#   lab ext                          list external agents and whether they're up
+#   lab ext setup <agent>            scaffold an adapter for your CLI, then guide you through it
+#   lab ext <agent> start            launch its daemon (detached, survives your shell)
+#   lab ext <agent> stop|restart     stop / bounce it
+#   lab ext <agent> status           running? pid, uptime, inbox queue, last log lines
+#   lab ext <agent> logs [-f]        show (or follow) the daemon log
+#   lab ext <agent> send <subj> <body>   ask it; the SUBJECT is the thread key
+#   lab ext <agent> threads          list conversation threads (subject -> session -> last used)
+#   lab ext <agent> chat [args]      interactive session, if the adapter supports it
+#
+# Each agent needs an ADAPTER: a small shell file saying how to run that one CLI.
+# `lab ext setup <agent>` creates it from a template. The lab side — inbox, threading,
+# delivery, retries — is handled by lab-bridge and is the same for every tool.
+set -uo pipefail
 
 LAB_HOME="${LAB_HOME:-$HOME/lab}"
-# Site config: per-install overrides (paths, model, node bin). Never committed —
-# the repo ships generic defaults; your deployment sets reality here.
-[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+# A syntax error here must not brick every command, so validate before sourcing.
+if [ -f "$LAB_HOME/lab.env" ]; then
+  if bash -n "$LAB_HOME/lab.env" 2>/dev/null; then set -a; . "$LAB_HOME/lab.env"; set +a
+  else echo "lab: WARNING — $LAB_HOME/lab.env has a syntax error and was IGNORED (values with spaces need quotes). Check: bash -n $LAB_HOME/lab.env" >&2; fi
+fi
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
-LAB="$LAB_HOME/bin/lab"
+LAB="$SELF/lab"
 EXT="$LAB_HOME/external.tsv"
-
-# --- codex specifics ---
-KEY="codex"
-DAEMON="$LAB_HOME/bin/lab-codex"
-LOCK="$LAB_HOME/.watch/$KEY.lock"
-INBOX="$LAB_HOME/inbox/$KEY"
-LOGDIR="${LAB_CODEX_WORK:-$LAB_HOME/.work/codex}"
-LOG="$LOGDIR/daemon.log"
-PROJECT="${LAB_CODEX_CD:-$PWD}"
-MODEL="${LAB_CODEX_MODEL:-gpt-5.6-sol}"
-REASONING="${LAB_CODEX_REASONING:-xhigh}"
-CODEX_BIN="${LAB_CODEX_BIN:-codex}"
-export PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH"
-THREADS="$LAB_HOME/.watch/codex.threads"   # subject-key -> session-uuid (written by the daemon)
+DAEMON="$SELF/lab-bridge"
+[ -n "${LAB_NODE_BIN:-}" ] && export PATH="$LAB_NODE_BIN:$PATH"
 
 die(){ echo "lab ext: $*" >&2; exit 1; }
 usage(){ awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; }
 thread_key(){ printf '%s' "$1" | sed -E 's/^([[:space:]]*[Rr][Ee]:[[:space:]]*)+//' | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-80; }
-threads_get(){ [ -f "$THREADS" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$THREADS" || true; }
 
-running_pid() {   # echo the live daemon pid, or nothing (verifies it's really lab-codex)
+# --- per-agent paths (set once the agent name is known) ---
+use_agent() {
+  KEY="$1"
+  LOCK="$LAB_HOME/.watch/$KEY.lock"
+  INBOX="$LAB_HOME/inbox/$KEY"
+  LOGDIR="${LAB_EXT_WORK:-$LAB_HOME/.work/$KEY}"
+  LOG="$LOGDIR/daemon.log"
+  THREADS="$LAB_HOME/.watch/$KEY.threads"
+  ADAPTER=""
+  for c in "${LAB_EXT_ADAPTER:-}" "$LAB_HOME/adapters/$KEY.sh" "$SELF/../adapters/$KEY.sh"; do
+    [ -n "$c" ] && [ -f "$c" ] && { ADAPTER="$c"; break; }
+  done
+}
+threads_get(){ [ -f "$THREADS" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$THREADS" || true; }
+running_pid() {
   [ -f "$LOCK" ] || return 0
   local p; p="$(cut -d' ' -f1 "$LOCK" 2>/dev/null || true)"
   { [ -n "$p" ] && [ -d "/proc/$p" ]; } || return 0
-  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'lab-codex' && echo "$p" || true
+  tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'lab-bridge' && echo "$p" || true
 }
 
 ext_list() {
-  echo "External lab agents (~/lab/external.tsv):"
-  if [ ! -s "$EXT" ]; then echo "  (none registered)"; return 0; fi
-  local key jid kind note
+  echo "External lab agents ($EXT):"
+  if [ ! -s "$EXT" ]; then
+    echo "  (none registered)"; echo; echo "  add one:  lab ext setup <agent>"; return 0
+  fi
+  local key jid kind note st p
   while IFS=$'\t' read -r key jid kind note; do
     [ -n "$key" ] || continue; case "$key" in \#*) continue;; esac
-    local st="down" p=""
-    [ "$key" = "$KEY" ] && p="$(running_pid)" && [ -n "$p" ] && st="LIVE (pid $p)"
-    printf "  %-10s %-18s %s\n" "$key" "$st" "$note"
+    use_agent "$key"; p="$(running_pid)"; st="down"
+    [ -n "$p" ] && st="LIVE (pid $p)"
+    [ -z "$ADAPTER" ] && st="$st  [no adapter]"
+    printf "  %-12s %-22s %s\n" "$key" "$st" "$note"
   done < "$EXT"
   echo
-  echo "manage:  lab ext codex <start|stop|restart|status|logs|chat|send>"
+  echo "manage:  lab ext <agent> <start|stop|restart|status|logs|send|threads|chat>"
+  echo "add:     lab ext setup <agent>"
 }
 
-codex_start() {
+# --- setup: scaffold an adapter and walk the user/agent through it ---
+ext_setup() {
+  local key; key="$(printf '%s' "${1:?usage: lab ext setup <agent>}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  use_agent "$key"
+  local dest="$LAB_HOME/adapters/$key.sh"
+  mkdir -p "$LAB_HOME/adapters"
+  if [ -f "$dest" ]; then
+    echo "lab ext: adapter already exists: $dest"
+  else
+    local tpl=""
+    for c in "$SELF/../adapters/TEMPLATE.sh" "$LAB_HOME/adapters/TEMPLATE.sh"; do
+      [ -f "$c" ] && { tpl="$c"; break; }
+    done
+    [ -n "$tpl" ] || die "adapter template not found (expected adapters/TEMPLATE.sh next to the install)"
+    sed "s/{{agent}}/$key/g" "$tpl" > "$dest"
+    echo "lab ext: created $dest"
+  fi
+  # register it so `lab who` / `lab send` know the name
+  local TAB; TAB="$(printf '\t')"; touch "$EXT"
+  grep -q "^${key}${TAB}" "$EXT" 2>/dev/null \
+    || printf '%s\t%s\texternal\t%s\n' "$key" "$key" "external reviewer ($key)" >> "$EXT"
+
+  cat <<EOF
+
+Next — teach it how to run your CLI. Edit:
+    $dest
+
+You only implement ONE required function, adapter_run():
+  read the request from  \$PROMPT_FILE
+  write the reply to     \$OUT_FILE      <- delivered verbatim to whoever asked
+  write noise to         \$LOG_FILE
+  resume a conversation with \$SESSION_ID (empty = new thread)
+  inspect the project at \$PROJECT       <- keep it READ-ONLY
+Optional: adapter_preflight, adapter_capture_session (threading), adapter_is_transient (rate limits).
+A worked example ships at: $SELF/../adapters/codex.sh
+
+Put settings (model, binary path, sandbox flags) in $LAB_HOME/lab.env and read them
+in the adapter with defaults, e.g.  MY_MODEL="\${MY_CLI_MODEL:-default}".
+
+Then:
+    lab ext $key start      # launch it
+    lab ext $key status     # confirm it came up
+    lab ext $key send "smoke test" "Reply with OK if you can read this."
+    lab read \$(lab name)    # its answer lands in your inbox
+EOF
+}
+
+agent_start() {
   local p; p="$(running_pid)"
-  [ -n "$p" ] && { echo "codex daemon already running (pid $p)."; return 0; }
-  [ -x "$DAEMON" ] || die "daemon not found or not executable: $DAEMON"
+  [ -n "$p" ] && { echo "$KEY daemon already running (pid $p)."; return 0; }
+  [ -x "$DAEMON" ] || die "bridge not found or not executable: $DAEMON"
+  [ -n "$ADAPTER" ] || die "no adapter for '$KEY' — create one:  lab ext setup $KEY"
   mkdir -p "$LOGDIR"
-  echo "-- $(date '+%F %T') lab ext codex start (sandbox=${LAB_CODEX_SANDBOX:-read-only}) --" >> "$LOG"
-  setsid "$DAEMON" >>"$LOG" 2>&1 </dev/null &
+  echo "-- $(date '+%F %T') lab ext $KEY start (adapter=$ADAPTER) --" >> "$LOG"
+  setsid "$DAEMON" "$KEY" >>"$LOG" 2>&1 </dev/null &
   local i; for i in $(seq 1 12); do sleep 0.5; [ -n "$(running_pid)" ] && break; done
   p="$(running_pid)"
   if [ -n "$p" ]; then
-    echo "codex daemon started (pid $p).  follow it:  lab ext codex logs -f"
+    echo "$KEY daemon started (pid $p).  follow it:  lab ext $KEY logs -f"
   else
-    echo "codex daemon did NOT come up — see:  lab ext codex logs" >&2
+    echo "$KEY daemon did NOT come up — see:  lab ext $KEY logs" >&2
     tail -n 8 "$LOG" 2>/dev/null | sed 's/^/  /' >&2 || true
     return 1
   fi
 }
 
-codex_stop() {
+agent_stop() {
   local p; p="$(running_pid)"
-  [ -n "$p" ] || { echo "codex daemon not running."; rm -f "$LOCK" 2>/dev/null || true; return 0; }
+  [ -n "$p" ] || { echo "$KEY daemon not running."; rm -f "$LOCK" 2>/dev/null || true; return 0; }
   kill -TERM "$p" 2>/dev/null || true
   local i; for i in $(seq 1 10); do [ -d "/proc/$p" ] || break; sleep 0.5; done
   [ -d "/proc/$p" ] && { kill -9 "$p" 2>/dev/null || true; sleep 0.5; }
   rm -f "$LOCK" 2>/dev/null || true
-  echo "codex daemon stopped (was pid $p)."
+  echo "$KEY daemon stopped (was pid $p)."
 }
 
-codex_status() {
+agent_status() {
   local p; p="$(running_pid)"
   if [ -n "$p" ]; then
     local et; et="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ' || true)"
-    echo "codex daemon: LIVE  (pid $p, up ${et:-?}s)"
+    echo "$KEY daemon: LIVE  (pid $p, up ${et:-?}s)"
   else
-    echo "codex daemon: down"
+    echo "$KEY daemon: down"
   fi
-  local q r fdir
+  local q r fdir rj nt
   q="$(find "$INBOX" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l || true)"
   r="$(find "$INBOX/.read" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l || true)"
   fdir="$(find "$INBOX/.failed" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l || true)"
-  local rj; rj="$(find "$INBOX/.rejected" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l || true)"
+  rj="$(find "$INBOX/.rejected" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l || true)"
   echo "  inbox: $q queued · $r answered · $fdir failed · $rj rejected(no-subject)"
-  local nt; nt="$([ -f "$THREADS" ] && grep -c . "$THREADS" 2>/dev/null || echo 0)"
-  echo "  threads: ${nt} conversation(s)  —  lab ext codex threads"
-  echo "  model=$MODEL  reasoning=$REASONING  sandbox=${LAB_CODEX_SANDBOX:-read-only}  cd=$PROJECT"
+  nt="$([ -f "$THREADS" ] && grep -c . "$THREADS" 2>/dev/null || echo 0)"
+  echo "  threads: ${nt} conversation(s)  —  lab ext $KEY threads"
+  echo "  adapter=${ADAPTER:-NONE}  cd=${LAB_EXT_CD:-$PWD}"
   if [ -f "$LOG" ]; then echo "  --- last log ---"; tail -n 6 "$LOG" 2>/dev/null | sed 's/^/  /'; fi
 }
 
-codex_logs() {
-  [ -f "$LOG" ] || die "no log yet ($LOG). Start it:  lab ext codex start"
+agent_logs() {
+  [ -f "$LOG" ] || die "no log yet ($LOG). Start it:  lab ext $KEY start"
   case "${1:-}" in -f|--follow) exec tail -n 40 -f "$LOG";; *) tail -n 40 "$LOG";; esac
 }
 
-codex_chat() {
-  [ -x "$CODEX_BIN" ] || CODEX_BIN="$(command -v codex || true)"
-  { [ -n "$CODEX_BIN" ] && [ -x "$CODEX_BIN" ]; } || die "codex binary not found (set LAB_CODEX_BIN)"
-  local common=( -C "$PROJECT" -m "$MODEL" -c "model_reasoning_effort=\"$REASONING\"" )
-  local leave="exit/Ctrl-D to leave; the daemon keeps running."
-  case "${1:-}" in
-    -h|--help) echo "lab ext codex chat [\"<subject>\" | --new | --pick | --last | <session-id>] [prompt...]"; return 0;;
-    --new)  shift; echo "[lab ext] new codex session in $PROJECT — $leave" >&2; exec "$CODEX_BIN" "${common[@]}" "$@";;
-    --pick) exec "$CODEX_BIN" resume "${common[@]}";;
-    --last) shift; echo "[lab ext] resuming most recent session — $leave" >&2; exec "$CODEX_BIN" resume --last "${common[@]}" "$@";;
-  esac
-  if [ -n "${1:-}" ]; then
-    local subj="$1"; shift
-    local sid; sid="$(threads_get "$(thread_key "$subj")")"
-    if [ -n "$sid" ]; then
-      echo "[lab ext] resuming thread \"$subj\" (session $sid) — $leave" >&2
-      exec "$CODEX_BIN" resume "$sid" "${common[@]}" "$@"
-    fi
-    echo "[lab ext] no thread matches \"$subj\"; treating it as a session id/name." >&2
-    exec "$CODEX_BIN" resume "$subj" "${common[@]}" "$@"
-  fi
-  # no arg: continue the most recent session if one exists, else start fresh
-  if find "$HOME/.codex/sessions" -maxdepth 6 -type f -name '*.jsonl' -print -quit 2>/dev/null | grep -q .; then
-    echo "[lab ext] resuming most recent codex session — $leave" >&2
-    exec "$CODEX_BIN" resume --last "${common[@]}"
-  else
-    echo "[lab ext] no prior codex session — starting fresh. $leave" >&2
-    exec "$CODEX_BIN" "${common[@]}"
-  fi
-}
-
-codex_send() {
-  local subj="${1:?usage: lab ext codex send <subject> <body>}"; shift || true
+agent_send() {
+  local subj="${1:?usage: lab ext <agent> send <subject> <body>}"; shift || true
   local body="${*:-}"; [ -n "$body" ] || { [ -t 0 ] || body="$(cat)"; }
   [ -n "$body" ] || die "need a body"
   local me="${LAB_FROM:-lab-manager}"
   LAB_FROM="$me" "$LAB" send "$KEY" "$subj" "$body"
-  echo "sent to codex as '$me' — read codex's reply with:  lab read $me"
-  echo "(same subject later = same codex conversation; new subject = fresh session)"
+  echo "sent to $KEY as '$me' — read the reply with:  lab read $me"
+  echo "(same subject later = same conversation; new subject = fresh session)"
 }
 
-codex_threads() {
-  [ -s "$THREADS" ] || { echo "no codex conversation threads yet."; return 0; }
+agent_threads() {
+  [ -s "$THREADS" ] || { echo "no $KEY conversation threads yet."; return 0; }
   printf "  %-40s %-38s %s\n" "SUBJECT" "SESSION" "LAST-USED"
   awk -F'\t' '{s=$5; if(length(s)>40) s=substr(s,1,38)".."; printf "  %-40s %-38s %s\n", s, $2, $4}' "$THREADS"
-  echo; echo "resume one interactively:  lab ext codex chat \"<subject>\""
+  echo; echo "resume one interactively:  lab ext $KEY chat \"<subject>\""
+}
+
+# Interactive chat is tool-specific: only available if the adapter implements adapter_chat.
+agent_chat() {
+  [ -n "$ADAPTER" ] || die "no adapter for '$KEY' — run:  lab ext setup $KEY"
+  # shellcheck disable=SC1090
+  . "$ADAPTER"
+  command -v adapter_chat >/dev/null || die "'$KEY' has no interactive chat (its adapter defines no adapter_chat). Use:  lab ext $KEY send \"<subject>\" \"<body>\""
+  local sid=""
+  [ -n "${1:-}" ] && sid="$(threads_get "$(thread_key "$1")")"
+  PROJECT="${LAB_EXT_CD:-$PWD}" SESSION_ID="$sid" AGENT="$KEY" adapter_chat "$@"
 }
 
 sub="${1:-list}"; shift || true
 case "$sub" in
   ""|list|ls)      ext_list;;
   -h|--help|help)  usage;;
-  codex)
+  setup)           ext_setup "$@";;
+  *)
+    use_agent "$sub"
     act="${1:-status}"; shift || true
     case "$act" in
-      start)         codex_start;;
-      stop)          codex_stop;;
-      restart)       codex_stop; codex_start;;
-      status)        codex_status;;
-      logs)          codex_logs "$@";;
-      chat|attach)   codex_chat "$@";;
-      send|ask)      codex_send "$@";;
-      threads)       codex_threads;;
+      start)          agent_start;;
+      stop)           agent_stop;;
+      restart)        agent_stop; agent_start;;
+      status)         agent_status;;
+      logs)           agent_logs "$@";;
+      send|ask)       agent_send "$@";;
+      threads)        agent_threads;;
+      chat|attach)    agent_chat "$@";;
       -h|--help|help) usage;;
-      *) die "codex: start|stop|restart|status|logs|chat|threads|send  (got '$act')";;
+      *)              die "unknown action '$act' for agent '$sub' (try: status)";;
     esac;;
-  *) die "unknown external agent '$sub' (have: codex).  try:  lab ext";;
 esac

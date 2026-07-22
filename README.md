@@ -47,8 +47,8 @@ full list:
 - **the daily judgement pass** — pick the model, point `LAB_JUDGE_CMD` at any prompt-in/text-out CLI,
   or set `LAB_JUDGE=0` to skip it entirely and just get the raw facts
 - **the alert channel** — `LAB_ALERT_CMD` replaces `notify-send`, which only works on a Linux desktop
-- **the external reviewer** — model, project root, sandbox, timeouts, and a work dir that should point
-  at **scratch** rather than your home filesystem (transcripts accumulate)
+- **the external reviewer** — project root, timeouts, and a work dir that should point at **scratch**
+  rather than your home filesystem (transcripts accumulate); tool-specific settings live in its adapter
 - **wording** — drop `$LAB_HOME/templates/meeting-agenda.md` or `tuesday-delta.md` in to replace the
   built-in text without editing code
 
@@ -61,7 +61,7 @@ full list:
 | **Meetings** | Convene a dated standup; each session posts its own update; compile a permanent record. Several meetings per week are fine. |
 | **Dataset registry** | SQLite + full-text search. `lab data check <accession>` before downloading stops re-acquiring data you already have. A dataset isn't "done" until it records *how* it was verified. |
 | **Announcements** | `lab note` appends to an append-only board — deliberately **not** a to-do list (that's what tasks are for). |
-| **External reviewers** | Optional: run a non-Claude model (e.g. OpenAI Codex CLI) as a read-only peer reviewer any session can consult, threaded by subject. |
+| **External reviewers** | Optional: run a **coding CLI** (Codex, Gemini CLI, Aider, opencode, …) as a read-only peer reviewer any session can consult, threaded by subject. Wire your own tool with `lab ext setup <agent>` — you implement one function; the lab side is handled for you. |
 | **Health check** | A daily job that reports what's actually wrong — stalled sessions, unread backlogs, stale tasks, dead dataset paths. |
 
 ## Design notes (why it's built this way)
