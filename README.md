@@ -1,92 +1,118 @@
 # PI simulator
 
-**Coordination for a fleet of Claude Code sessions.** Several agents work on one research
-program; this gives them a shared blackboard so they can message each other, hand off tasks,
-hold standups, and keep one registry of the data they produce — instead of a human copy-pasting
-between terminals.
+**You have several AI agents working on your project. Right now, you are the one carrying messages
+between them.**
 
-It is deliberately boring: plain files, SQLite, and one `lab` CLI. No server, no daemon
-(except optional external reviewers), no dependencies beyond Python 3 and bash.
+You copy a result out of one terminal and paste it into another. You remember which agent is waiting
+on what. You ask each one what it did this week so you can write it up. Two of them download the same
+50 GB dataset because neither knew the other had it.
+
+PI simulator gives your agents a shared workspace so they can do that themselves — message each
+other, pick up work, hold a weekly standup, and keep one honest list of the data they've produced.
+You go back to running the project instead of relaying for it.
 
 ```
-lab who                                   # who can I reach right now?
-lab send analysis "schema changed" "…"    # message another session
-lab task add --title "…" --desc "…"       # post work anyone can pick up
-lab meeting convene                       # open a standup; agents post updates
-lab data check <accession>                # do we already have this dataset?
+lab who                        who's working right now?
+lab task                       what needs doing?
+lab send <agent> "…" "…"       hand something to another agent
+lab data check <dataset-id>    do we already have this? (before downloading it again)
 ```
 
-## Requirements
+## Setting it up
 
-- **Claude Code** — identity comes from the harness (`CLAUDE_JOB_DIR`, `~/.claude/jobs/*/state.json`).
-  This is a Claude-Code-specific tool; it will not do anything useful without it.
-- **Python 3.8+** (stdlib only — `sqlite3` with FTS5) and **bash**.
-- A shared filesystem if sessions run on more than one host. NFS is fine and is the tested
-  configuration (writes are `flock`-serialised, SQLite runs in rollback-journal mode, never WAL).
+**Ask an agent to do it.** Clone this repo, open a Claude Code session inside it, and paste:
 
-## Install
+> Read `docs/AGENT-SETUP.md` in this repo and set up PI simulator for me. Follow it exactly:
+> detect what you can, ask me only what you genuinely can't, and verify at the end.
+
+It works out what your machine needs, asks you a few questions, sets everything up, and checks that
+it actually works before telling you it's done. That's the intended route — you shouldn't have to
+read any of the rest of this.
+
+<details>
+<summary>Prefer to do it by hand</summary>
 
 ```bash
 git clone git@github.com:Euchiz/PI-simulator.git
-cd PI-simulator && ./install.sh          # symlinks bin/ onto your PATH
-lab init ~/lab                           # create the blackboard (data lives here)
+cd PI-simulator && ./install.sh
+lab init ~/lab
 echo 'export LAB_HOME=~/lab' >> ~/.bashrc
-lab register analysis /path/to/project   # one per session
+lab register analysis /path/to/project    # once per agent
 ```
+</details>
 
-**Code and data are separate.** The repo is the code; `$LAB_HOME` (default `~/lab`) holds your
-blackboard — inboxes, meetings, tasks, registry. Nothing in this repo writes research content.
+**You need Claude Code.** That's where the agents live, and it's how this tool tells them apart.
+Everything else it needs is already on a normal Linux or Mac machine.
 
-**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically).
-**`lab init` writes it for you**, with every option commented at its default — so the knobs are
-discoverable instead of buried in the source. Nothing needs editing to start; re-running `lab init`
-never overwrites your settings. See [`examples/lab.env.example`](examples/lab.env.example) for the
-full list:
+## What your agents can now do
 
-- **health-check thresholds** — what counts as a stalled session, an unread backlog, a stale task
-- **the daily judgement pass** — pick the model, point `LAB_JUDGE_CMD` at any prompt-in/text-out CLI,
-  or set `LAB_JUDGE=0` to skip it entirely and just get the raw facts
-- **the alert channel** — `LAB_ALERT_CMD` replaces `notify-send`, which only works on a Linux desktop
-- **the external reviewer** — project root, timeouts, and a work dir that should point at **scratch**
-  rather than your home filesystem (transcripts accumulate); tool-specific settings live in its adapter
-- **wording** — drop `$LAB_HOME/templates/meeting-agenda.md` or `tuesday-delta.md` in to replace the
-  built-in text without editing code
+**Talk to each other.** One agent messages another and the reply comes back to it, without going
+through you. If an agent is renamed or restarted, its messages still find it. If you try to write to
+an agent that isn't around any more, it tells you instead of quietly losing the message.
 
-## What it gives you
+**Pick up work.** Anyone can post a task with a title and a description. You can tag an agent to say
+*"see if you can help"* — a nudge, not an assignment, and the task stays open to whoever gets there
+first. Once someone claims it, nobody else can take it by mistake, and whoever posted it is told when
+it's finished or abandoned.
+
+**Hold a standup.** Open a meeting and every agent posts what it actually did — results, numbers,
+figures, what it's stuck on. It gets saved as a dated record you can read later, or turn into a
+weekly summary or slides.
+
+**Stop re-downloading data.** Every dataset gets registered once: what it is, where it lives, what
+state it's in, and how it was checked. Before anyone downloads anything, one command says whether
+you already have it. A dataset doesn't count as finished until it records *how* it was verified —
+because "the job exited without an error" has burned this project before.
+
+**Get a second opinion.** Optionally, plug in a coding assistant from a different company (Codex,
+Gemini CLI, Aider, and so on) as an independent reviewer any agent can consult. It reads your code
+and data but can't change anything. Useful precisely because it isn't one of your own agents and
+has no stake in their conclusions.
+
+**Know when something is stuck.** A daily check tells you what's actually wrong — an agent that
+went quiet, mail nobody read, a task nobody picked up, a dataset whose files have vanished. It stays
+quiet when everything is fine.
+
+## Living with it
+
+It works out of the box. `lab init` also writes you a settings file with every option listed and
+explained, so if you do want to change something — how long an agent can be quiet before you're
+told, where alerts go, the wording of the standup invitation — it's all in one place with comments,
+not buried in code.
+
+Your data lives in one folder (`~/lab` by default): the messages, meetings, tasks and dataset list.
+That folder is yours — nothing from this project is ever written into it, and nothing from it is
+ever sent anywhere. Back it up like you'd back up a lab notebook.
+
+Type `lab help` for a map of the commands, or `lab help tasks` (or `meetings`, `data`, `messaging`)
+for one area at a time.
+
+## Where to look next
 
 | | |
 |---|---|
-| **Messaging** | Direct session→session mail with a live roster. Identity is a **stable job id**, so a renamed or restarted session never loses mail, and `lab send` refuses a dead recipient instead of dropping the message. |
-| **Tasks** | A task bulletin with state. `--tag` is a *suggestion* ("see if you can help"), never a reservation — tagged tasks stay open to anyone. `take` is the claim, and you cannot take an already-taken task. The creator is auto-notified on take/done/fail. |
-| **Meetings** | Convene a dated standup; each session posts its own update; compile a permanent record. Several meetings per week are fine. |
-| **Dataset registry** | SQLite + full-text search. `lab data check <accession>` before downloading stops re-acquiring data you already have. A dataset isn't "done" until it records *how* it was verified. |
-| **Announcements** | `lab note` appends to an append-only board — deliberately **not** a to-do list (that's what tasks are for). |
-| **External reviewers** | Optional: run a **coding CLI** (Codex, Gemini CLI, Aider, opencode, …) as a read-only peer reviewer any session can consult, threaded by subject. Wire your own tool with `lab ext setup <agent>` — you implement one function; the lab side is handled for you. |
-| **Health check** | A daily job that reports what's actually wrong — stalled sessions, unread backlogs, stale tasks, dead dataset paths. |
+| [`docs/AGENT-SETUP.md`](docs/AGENT-SETUP.md) | hand this to an agent and it installs everything |
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | the habits your agents follow — worth skimming |
+| [`docs/dataset-registry.md`](docs/dataset-registry.md) | what gets recorded about each dataset, and why |
+| [`docs/external-reviewers.md`](docs/external-reviewers.md) | adding an outside reviewer |
+| [`examples/`](examples/) | ready-made snippets to drop into your own setup |
 
-## Design notes (why it's built this way)
+<details>
+<summary>For the curious: how it works underneath</summary>
 
-- **Identity is the stable job id, not the display name.** Names change; job ids survive rename and
-  restart. Renaming a session migrates its inbox automatically.
-- **One CLI owns all writes**, guarded by `flock`. No agent opens a database directly.
-- **Never scan the filesystem.** The dataset registry *is* the index. A broad `find` over a large
-  network mount can degrade a shared login node for everyone.
-- **Snapshots are for humans, queries are for machines.** `DATASETS.md` is a rendered convenience
-  file and may be stale; live answers come from the CLI.
-- **Writes stay O(1).** Rendering and exporting run off the write path (cron/on-demand), so write
-  latency doesn't grow with the table.
-
-## Docs
-
-- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the conventions agents follow
-- [`docs/dataset-registry.md`](docs/dataset-registry.md) — schema + rationale
-- [`docs/external-reviewers.md`](docs/external-reviewers.md) — the non-Claude reviewer design
-- [`examples/`](examples/) — a `CLAUDE.md` snippet for your agents, a SessionStart hook, a crontab
+Deliberately unexciting — plain files and a small database, driven by one command-line tool. No
+server, no account, nothing running in the cloud, no dependencies beyond what ships with Linux or
+macOS. It's designed to survive a shared university cluster: several agents can write at the same
+time without corrupting anything, it never goes hunting across the filesystem (one careless search
+once slowed a shared machine to a crawl for everyone on it), and it stays fast as the records pile
+up. Agents are tracked by a fixed internal identity rather than their display name, which is why
+renaming or restarting one doesn't lose its messages.
+</details>
 
 ## Status
 
-Working software, in daily use coordinating a real multi-agent research program. Interfaces may
-still move. Issues and PRs welcome.
+In daily use coordinating a real multi-agent research project. Things may still move around.
+Questions and suggestions welcome — open an issue.
 
 ## License
 
