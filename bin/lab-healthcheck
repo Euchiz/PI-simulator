@@ -11,9 +11,12 @@ REG = os.path.join(LAB, "registry.md")
 BOARD = os.path.join(LAB, "BOARD.md")
 INBOX = os.path.join(LAB, "inbox")
 
-STALE_WORKING_H = 24      # "working" but untouched this long -> possibly stalled
-INBOX_BACKLOG_H = 48      # unread message older than this -> coordination not picked up
-BOARD_AGING_D   = 7       # open board item older than this -> aging
+# Tunable via $LAB_HOME/lab.env — a fast-moving lab and a slow one disagree about
+# what "stalled" means, so none of these are baked in.
+STALE_WORKING_H = int(os.environ.get("LAB_STALE_WORKING_H", "24"))   # "working" but untouched
+INBOX_BACKLOG_H = int(os.environ.get("LAB_INBOX_BACKLOG_H", "48"))   # unread mail piling up
+BOARD_RECENT_D  = int(os.environ.get("LAB_BOARD_RECENT_D",  "7"))    # "recent" announcements
+BOARD_AGING_D   = BOARD_RECENT_D
 
 def pkey(s):
     return re.sub(r'-+$', '', re.sub(r'^-+', '', re.sub(r'[^a-z0-9]+', '-', (s or '').lower())))[:50]
@@ -127,7 +130,7 @@ else:
     lines.append("  (none)")
 
 # --- TASK bulletin: this is what actually ages ---
-TASK_STALE_D = 5
+TASK_STALE_D = int(os.environ.get("LAB_TASK_STALE_D", "5"))
 lines.append("")
 lines.append("Tasks (lab task):")
 tdb = os.path.join(LAB, "tasks.db")
@@ -194,7 +197,7 @@ for k in ext_keys:
         flags.append(f"{k}: {fl} FAILED review(s) — check `lab ext {k} logs`")
     if rj:
         flags.append(f"{k}: {rj} message(s) rejected for no subject — the sender must supply a subject")
-    if q > 5:
+    if q > int(os.environ.get("LAB_EXT_QUEUE_WARN", "5")):
         flags.append(f"{k}: {q} reviews queued — possible backlog/stall")
 
 lines.append("")

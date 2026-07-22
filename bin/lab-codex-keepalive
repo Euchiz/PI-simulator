@@ -7,6 +7,10 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export HOME="${HOME:-$HOME}"
 export PATH="${LAB_NODE_BIN:+$LAB_NODE_BIN:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
 LAB_HOME="${LAB_HOME:-$HOME/lab}"
+# Site config: per-install overrides (paths, model, node bin). Never committed —
+# the repo ships generic defaults; your deployment sets reality here.
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+
 KLOG="${LAB_CODEX_WORK:-$LAB_HOME/.work/codex}/keepalive.log"
 mkdir -p "$(dirname "$KLOG")" 2>/dev/null || true
 

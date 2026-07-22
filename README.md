@@ -10,10 +10,10 @@ It is deliberately boring: plain files, SQLite, and one `lab` CLI. No server, no
 
 ```
 lab who                                   # who can I reach right now?
-lab send poreior "schema changed" "…"     # message another session
+lab send analysis "schema changed" "…"    # message another session
 lab task add --title "…" --desc "…"       # post work anyone can pick up
 lab meeting convene                       # open a standup; agents post updates
-lab data check PRJEB00000                 # do we already have this dataset?
+lab data check <accession>                # do we already have this dataset?
 ```
 
 ## Requirements
@@ -31,11 +31,26 @@ git clone git@github.com:Euchiz/PI-simulator.git
 cd PI-simulator && ./install.sh          # symlinks bin/ onto your PATH
 lab init ~/lab                           # create the blackboard (data lives here)
 echo 'export LAB_HOME=~/lab' >> ~/.bashrc
-lab register poreior /path/to/project    # one per session
+lab register analysis /path/to/project   # one per session
 ```
 
 **Code and data are separate.** The repo is the code; `$LAB_HOME` (default `~/lab`) holds your
 blackboard — inboxes, meetings, tasks, registry. Nothing in this repo writes research content.
+
+**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically).
+**`lab init` writes it for you**, with every option commented at its default — so the knobs are
+discoverable instead of buried in the source. Nothing needs editing to start; re-running `lab init`
+never overwrites your settings. See [`examples/lab.env.example`](examples/lab.env.example) for the
+full list:
+
+- **health-check thresholds** — what counts as a stalled session, an unread backlog, a stale task
+- **the daily judgement pass** — pick the model, point `LAB_JUDGE_CMD` at any prompt-in/text-out CLI,
+  or set `LAB_JUDGE=0` to skip it entirely and just get the raw facts
+- **the alert channel** — `LAB_ALERT_CMD` replaces `notify-send`, which only works on a Linux desktop
+- **the external reviewer** — model, project root, sandbox, timeouts, and a work dir that should point
+  at **scratch** rather than your home filesystem (transcripts accumulate)
+- **wording** — drop `$LAB_HOME/templates/meeting-agenda.md` or `tuesday-delta.md` in to replace the
+  built-in text without editing code
 
 ## What it gives you
 

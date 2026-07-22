@@ -16,6 +16,10 @@
 set -euo pipefail
 
 LAB_HOME="${LAB_HOME:-$HOME/lab}"
+# Site config: per-install overrides (paths, model, node bin). Never committed —
+# the repo ships generic defaults; your deployment sets reality here.
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+
 LAB="$LAB_HOME/bin/lab"
 EXT="$LAB_HOME/external.tsv"
 
@@ -29,7 +33,7 @@ LOG="$LOGDIR/daemon.log"
 PROJECT="${LAB_CODEX_CD:-$PWD}"
 MODEL="${LAB_CODEX_MODEL:-gpt-5.6-sol}"
 REASONING="${LAB_CODEX_REASONING:-xhigh}"
-CODEX_BIN="${LAB_CODEX_BIN:-$HOME/.nvm/versions/node/v24.15.0/bin/codex}"
+CODEX_BIN="${LAB_CODEX_BIN:-codex}"
 export PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH"
 THREADS="$LAB_HOME/.watch/codex.threads"   # subject-key -> session-uuid (written by the daemon)
 
@@ -147,7 +151,7 @@ codex_send() {
   local subj="${1:?usage: lab ext codex send <subject> <body>}"; shift || true
   local body="${*:-}"; [ -n "$body" ] || { [ -t 0 ] || body="$(cat)"; }
   [ -n "$body" ] || die "need a body"
-  local me="${LAB_FROM:-zac}"
+  local me="${LAB_FROM:-lab-manager}"
   LAB_FROM="$me" "$LAB" send "$KEY" "$subj" "$body"
   echo "sent to codex as '$me' — read codex's reply with:  lab read $me"
   echo "(same subject later = same codex conversation; new subject = fresh session)"
