@@ -1,0 +1,13 @@
+# PI simulator — optional scheduled jobs. `crontab -e` and adjust paths.
+# Assumes `lab` and friends are on PATH (see install.sh) and LAB_HOME is set.
+
+# Daily health check -> $LAB_HOME/HEALTH.md, alerts only when something is wrong
+7 8 * * *  LAB_HOME=$HOME/lab lab-daily >> $HOME/lab/alerts/.cron.log 2>&1
+
+# Dataset registry maintenance: human snapshot + CSV backup + dead-path audit
+15 8 * * * LAB_HOME=$HOME/lab lab-data-maint >> $HOME/lab/.datasets-maint.log 2>&1
+
+# Auto-convene a meeting (Mon 3pm and Thu 10pm), and a Tuesday "anything new?" check-in
+0 15 * * 1 LAB_FROM=lab-manager LAB_HOME=$HOME/lab lab meeting convene >> $HOME/lab/meeting/.cron.log 2>&1
+0 22 * * 4 LAB_FROM=lab-manager LAB_HOME=$HOME/lab lab meeting convene >> $HOME/lab/meeting/.cron.log 2>&1
+0 10 * * 2 LAB_HOME=$HOME/lab lab-tuesday-delta >> $HOME/lab/meeting/.cron.log 2>&1

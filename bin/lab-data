@@ -1,0 +1,294 @@
+#!/usr/bin/env python3
+"""lab-data — the lab dataset registry. Pointers + metadata only, never the data.
+
+Invoked as `lab data <cmd>` (the bash `lab` CLI execs this). SQLite at
+$LAB_HOME/datasets.db. NFS-safe: writes take an flock mutex and use rollback-journal
+mode (NOT WAL). Reads are live + indexed/FTS. render/export/audit are for cron +
+on-demand — they are NOT on the write path, so write latency is constant at any size.
+"""
+import sqlite3, sys, os, re, csv, json, fcntl, argparse, datetime
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+DB   = os.path.join(LAB, "datasets.db")
+LOCK = os.path.join(LAB, ".datasets.lock")
+MD   = os.path.join(LAB, "DATASETS.md")
+CSVF = os.path.join(LAB, "datasets.csv")
+
+# columns the caller can set (order = display order); required set enforced in add()
+COLS = ["id","study_name","accession","subset","paper_url","location","tags","samples",
+        "status_line","verified","verified_how","usage","size_bytes","n_files",
+        "md5_checked","pair_of","role","ref_genome","benchmark_valid","benchmark_note",
+        "provenance","notes","added_by","updated_by","created","updated"]
+FTS_COLS = ["id","study_name","accession","subset","tags","samples","status_line","usage","notes"]
+
+def now():  return datetime.datetime.now().isoformat(timespec="seconds")
+def pkey(s):
+    return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+
+def resolve_self():
+    jd  = os.environ.get("CLAUDE_JOB_DIR","")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID","")
+    cands = [os.path.join(jd,"state.json") if jd else "",
+             os.path.join(os.path.dirname(jd),"state.json") if jd else "",
+             os.path.join(HOME,".claude","jobs",sid.split("-")[0],"state.json") if sid else ""]
+    for c in cands:
+        if c and os.path.isfile(c):
+            try: return pkey(json.load(open(c)).get("name",""))
+            except Exception: pass
+    return pkey(os.environ.get("LAB_FROM",""))
+
+def connect():
+    con = sqlite3.connect(DB, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=DELETE")   # rollback journal — NFS-safe (no WAL/-shm mmap)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(con)
+    return con
+
+FTS_TRIGGERS = """
+    DROP TRIGGER IF EXISTS datasets_ai; DROP TRIGGER IF EXISTS datasets_ad; DROP TRIGGER IF EXISTS datasets_au;
+    DROP TABLE IF EXISTS datasets_fts;
+    CREATE VIRTUAL TABLE datasets_fts USING fts5(
+      id, study_name, accession, subset, tags, samples, status_line, usage, notes,
+      content='datasets', content_rowid='rowid');
+    CREATE TRIGGER datasets_ai AFTER INSERT ON datasets BEGIN
+      INSERT INTO datasets_fts(rowid,id,study_name,accession,subset,tags,samples,status_line,usage,notes)
+      VALUES (new.rowid,new.id,new.study_name,new.accession,new.subset,new.tags,new.samples,new.status_line,new.usage,new.notes);
+    END;
+    CREATE TRIGGER datasets_ad AFTER DELETE ON datasets BEGIN
+      INSERT INTO datasets_fts(datasets_fts,rowid,id,study_name,accession,subset,tags,samples,status_line,usage,notes)
+      VALUES ('delete',old.rowid,old.id,old.study_name,old.accession,old.subset,old.tags,old.samples,old.status_line,old.usage,old.notes);
+    END;
+    CREATE TRIGGER datasets_au AFTER UPDATE ON datasets BEGIN
+      INSERT INTO datasets_fts(datasets_fts,rowid,id,study_name,accession,subset,tags,samples,status_line,usage,notes)
+      VALUES ('delete',old.rowid,old.id,old.study_name,old.accession,old.subset,old.tags,old.samples,old.status_line,old.usage,old.notes);
+      INSERT INTO datasets_fts(rowid,id,study_name,accession,subset,tags,samples,status_line,usage,notes)
+      VALUES (new.rowid,new.id,new.study_name,new.accession,new.subset,new.tags,new.samples,new.status_line,new.usage,new.notes);
+    END;
+    INSERT INTO datasets_fts(rowid,id,study_name,accession,subset,tags,samples,status_line,usage,notes)
+      SELECT rowid,id,study_name,accession,subset,tags,samples,status_line,usage,notes FROM datasets;
+"""
+
+def ensure_schema(con):
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS datasets(
+      id TEXT PRIMARY KEY, study_name TEXT NOT NULL, accession TEXT, subset TEXT, paper_url TEXT,
+      location TEXT NOT NULL, tags TEXT, samples TEXT, status_line TEXT NOT NULL,
+      verified INTEGER DEFAULT 0, verified_how TEXT, usage TEXT NOT NULL,
+      size_bytes INTEGER, n_files INTEGER, md5_checked INTEGER DEFAULT 0,
+      pair_of TEXT, role TEXT, ref_genome TEXT, benchmark_valid INTEGER, benchmark_note TEXT,
+      provenance TEXT, notes TEXT, added_by TEXT, updated_by TEXT NOT NULL,
+      created TEXT NOT NULL, updated TEXT NOT NULL);
+    """)
+    # --- migrations (idempotent; accession is NOT unique — a super-family spans many datasets) ---
+    cols = [r[1] for r in con.execute("PRAGMA table_info(datasets)")]
+    if "subset" not in cols:
+        con.execute("ALTER TABLE datasets ADD COLUMN subset TEXT")
+    idx = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='index'")]
+    if "ux_accession" in idx:                       # drop the old UNIQUE constraint
+        con.execute("DROP INDEX ux_accession")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_accession ON datasets(accession)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_tags ON datasets(tags)")
+    ft = con.execute("SELECT sql FROM sqlite_master WHERE name='datasets_fts'").fetchone()
+    if not ft or "subset" not in (ft[0] or ""):     # (re)build FTS to include subset
+        con.executescript(FTS_TRIGGERS)
+    con.commit()
+
+class WriteLock:
+    def __enter__(self):
+        os.makedirs(LAB, exist_ok=True)
+        self.f = open(LOCK,"w"); fcntl.flock(self.f, fcntl.LOCK_EX); return self
+    def __exit__(self,*a):
+        fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+
+def die(msg, code=1): print(f"lab data: {msg}", file=sys.stderr); sys.exit(code)
+
+# ---------- reads (live, no lock) ----------
+def cmd_check(a):
+    con = connect(); q = a.query
+    # an accession may cover MANY datasets (super-family) -> return ALL of them
+    rows = con.execute("SELECT * FROM datasets WHERE accession=? OR id=? ORDER BY subset", (q,q)).fetchall()
+    if not rows:
+        hits = fts(con, q)
+        if hits:
+            print(f"possible matches for '{q}' (not exact):")
+            for h in hits: print(f"  {h['id']:<24} {(h['study_name'] or '')[:48]}  @ {h['location']}")
+            sys.exit(1)
+        print(f"NOT FOUND: '{q}'. Safe to acquire — then register with `lab data add`.")
+        sys.exit(0)
+    print(f"ALREADY HAVE {len(rows)} dataset(s) under '{q}' — check whether YOUR slice is here before downloading:")
+    for r in rows:
+        v = "VERIFIED" if r["verified"] else "unverified"
+        sub = f"  [{r['subset']}]" if r["subset"] else ""
+        print(f"  • {r['id']}{sub}   [{v}]   contact: {r['updated_by']}")
+        print(f"      {r['status_line']}")
+        print(f"      @ {r['location']}")
+    sys.exit(1)   # non-zero so a script won't blindly proceed to download
+
+def fts(con, q):
+    # escape FTS query -> match as a phrase-ish OR of terms
+    terms = " OR ".join('"%s"'%t for t in re.findall(r"[A-Za-z0-9_./-]+", q))
+    if not terms: return []
+    try:
+        return con.execute(
+          "SELECT d.* FROM datasets_fts f JOIN datasets d ON d.rowid=f.rowid "
+          "WHERE datasets_fts MATCH ? ORDER BY rank", (terms,)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+def cmd_find(a):
+    con = connect()
+    rows = fts(con, a.query)
+    if not rows: print(f"no matches for '{a.query}'"); return
+    for r in rows:
+        vv = "✓" if r["verified"] else "·"
+        print(f"[{vv}] {r['id']:<22} {(r['study_name'] or '')[:46]:<46} {(r['tags'] or '')[:28]}")
+        print(f"      {(r['status_line'] or '')[:100]}")
+
+def cmd_show(a):
+    con = connect()
+    r = con.execute("SELECT * FROM datasets WHERE id=?", (a.id,)).fetchone()
+    if not r: die(f"no dataset id '{a.id}'", 3)
+    for c in COLS:
+        if r[c] not in (None,""): print(f"  {c:<15}: {r[c]}")
+
+def cmd_list(a):
+    con = connect()
+    sql = "SELECT * FROM datasets"; where=[]; args=[]
+    if a.tag:    where.append("lower(tags) LIKE ?");    args.append(f"%{a.tag.lower()}%")
+    if a.status: where.append("lower(status_line) LIKE ?"); args.append(f"%{a.status.lower()}%")
+    if where: sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY updated DESC"
+    rows = con.execute(sql, args).fetchall()
+    print(f"{len(rows)} dataset(s):")
+    for r in rows:
+        vv = "✓" if r["verified"] else "·"
+        acc = (r["accession"] or "")+(f"[{r['subset']}]" if r["subset"] else "")
+        print(f"[{vv}] {r['id']:<26} {acc[:26]:<26} {(r['tags'] or '')[:22]:<22} {(r['status_line'] or '')[:34]}")
+
+# ---------- writes (flock + txn; NOT auto-render) ----------
+def cmd_add(a):
+    vals = {c: getattr(a, c, None) for c in COLS}
+    vals["id"] = pkey(a.id)
+    for req in ("id","study_name","location","status_line","usage"):
+        if not vals.get(req): die(f"--{req.replace('_','-')} is required", 2)
+    who = a.by or resolve_self() or "unknown"
+    vals["added_by"]=who; vals["updated_by"]=who; vals["created"]=now(); vals["updated"]=now()
+    vals["verified"] = 1 if a.verified else 0
+    with WriteLock():
+        con = connect()
+        # explicit block with a clear message (nicer than a raw IntegrityError)
+        if con.execute("SELECT 1 FROM datasets WHERE id=?", (vals["id"],)).fetchone():
+            die(f"id '{vals['id']}' already exists — consider `lab data update {vals['id']}`.", 4)
+        if vals.get("accession"):
+            sib = con.execute("SELECT id,subset FROM datasets WHERE accession=?", (vals["accession"],)).fetchall()
+            if sib:  # WARN, don't block: one accession can legitimately span many datasets
+                names = ", ".join(s["id"]+(f"[{s['subset']}]" if s["subset"] else "") for s in sib)
+                print(f"note: accession '{vals['accession']}' already has {len(sib)} registered slice(s): {names}",
+                      file=sys.stderr)
+                print("      adding as another slice of the same study. If this is the SAME data, cancel and "
+                      "`lab data update` instead.", file=sys.stderr)
+        cols=[c for c in COLS]; ph=",".join("?"*len(cols))
+        con.execute(f"INSERT INTO datasets ({','.join(cols)}) VALUES ({ph})", [vals[c] for c in cols])
+        con.commit()
+    print(f"lab data: added '{vals['id']}'  (contact: {who})")
+
+def cmd_update(a):
+    idv = pkey(a.id)
+    sets={};
+    for c in ["study_name","accession","subset","paper_url","location","tags","samples","status_line",
+              "verified_how","usage","size_bytes","n_files","pair_of","role","ref_genome",
+              "benchmark_note","provenance","notes"]:
+        v=getattr(a,c,None)
+        if v is not None: sets[c]=v
+    if a.verified: sets["verified"]=1
+    if a.md5_checked: sets["md5_checked"]=1
+    if not sets: die("nothing to update — pass at least one field", 2)
+    who = a.by or resolve_self() or "unknown"
+    sets["updated_by"]=who; sets["updated"]=now()
+    with WriteLock():
+        con = connect()
+        if not con.execute("SELECT 1 FROM datasets WHERE id=?", (idv,)).fetchone():
+            die(f"no dataset id '{idv}' — use `lab data add` to create it.", 3)
+        # accession is NOT unique (super-families) — no collision check here
+        con.execute(f"UPDATE datasets SET {','.join(k+'=?' for k in sets)} WHERE id=?",
+                    list(sets.values())+[idv]); con.commit()
+    print(f"lab data: updated '{idv}'  (contact: {who})")
+
+def cmd_mv(a):
+    idv=pkey(a.id)
+    who = a.by or resolve_self() or "unknown"
+    with WriteLock():
+        con=connect()
+        r=con.execute("SELECT location FROM datasets WHERE id=?", (idv,)).fetchone()
+        if not r: die(f"no dataset id '{idv}'", 3)
+        old=r["location"]
+        con.execute("UPDATE datasets SET location=?, updated_by=?, updated=? WHERE id=?",
+                    (a.location, who, now(), idv)); con.commit()
+    if a.symlink and old and old!=a.location and not os.path.lexists(old):
+        try: os.symlink(a.location, old); print(f"  symlink {old} -> {a.location}")
+        except OSError as e: print(f"  (symlink skipped: {e})")
+    print(f"lab data: moved '{idv}'  {old}  ->  {a.location}")
+
+# ---------- snapshot / maintenance (cron + on-demand; NOT on write path) ----------
+def cmd_render(a):
+    con=connect(); rows=con.execute("SELECT * FROM datasets ORDER BY updated DESC").fetchall()
+    with open(MD,"w") as f:
+        f.write("# Lab datasets — human-readable snapshot\n\n")
+        f.write(f"_Generated {now()} · {len(rows)} datasets · **for reading only** — "
+                "this file is a stale snapshot; to query live use `lab data find/list/show`._\n\n")
+        f.write("| id | accession | subset | tags | samples | status | ok? | location | contact |\n"
+                "|---|---|---|---|---|---|---|---|---|\n")
+        for r in rows:
+            ok = "✓" if r["verified"] else ""
+            f.write("| "+" | ".join([
+                r["id"] or "", (r["accession"] or ""), (r["subset"] or ""),
+                (r["tags"] or ""), (r["samples"] or ""),
+                (r["status_line"] or "").replace("|","\\|"), ok,
+                (r["location"] or ""), (r["updated_by"] or "")])+" |\n")
+    print(f"lab data: wrote {MD} ({len(rows)} rows)")
+
+def cmd_export(a):
+    con=connect()
+    with open(CSVF,"w",newline="") as f:
+        w=csv.writer(f); w.writerow(COLS)
+        for r in con.execute(f"SELECT {','.join(COLS)} FROM datasets ORDER BY id"):
+            w.writerow([r[c] for c in COLS])
+    print(f"lab data: wrote {CSVF}")
+
+def cmd_audit(a):
+    con=connect(); rows=con.execute("SELECT id,location,verified,updated_by FROM datasets").fetchall()
+    missing=[r for r in rows if not os.path.exists(r["location"])]   # stat only — never walks a tree
+    unver  =[r for r in rows if not r["verified"]]
+    print(f"audit: {len(rows)} datasets · {len(missing)} MISSING paths · {len(unver)} unverified")
+    for r in missing: print(f"  MISSING  {r['id']:<22} {r['location']}   (contact {r['updated_by']})")
+    for r in unver:   print(f"  unverif  {r['id']:<22} (contact {r['updated_by']})")
+    sys.exit(2 if missing else 0)
+
+def build_parser():
+    p=argparse.ArgumentParser(prog="lab data"); sub=p.add_subparsers(dest="cmd", required=True)
+    def add_common_write(sp):
+        for c in ["study_name","accession","subset","paper_url","location","tags","samples","status_line",
+                  "verified_how","usage","size_bytes","n_files","pair_of","role","ref_genome",
+                  "benchmark_note","provenance","notes"]:
+            sp.add_argument("--"+c.replace("_","-"), dest=c)
+        sp.add_argument("--verified", action="store_true")
+        sp.add_argument("--md5-checked", dest="md5_checked", action="store_true")
+        sp.add_argument("--by", help="override contact/updated_by (default: this session)")
+    s=sub.add_parser("check"); s.add_argument("query"); s.set_defaults(fn=cmd_check)
+    s=sub.add_parser("find");  s.add_argument("query"); s.set_defaults(fn=cmd_find)
+    s=sub.add_parser("show");  s.add_argument("id");    s.set_defaults(fn=cmd_show)
+    s=sub.add_parser("list");  s.add_argument("--tag"); s.add_argument("--status"); s.set_defaults(fn=cmd_list)
+    s=sub.add_parser("add");   s.add_argument("--id", required=True); add_common_write(s); s.set_defaults(fn=cmd_add)
+    s=sub.add_parser("update");s.add_argument("id");    add_common_write(s); s.set_defaults(fn=cmd_update)
+    s=sub.add_parser("mv");    s.add_argument("id"); s.add_argument("location"); s.add_argument("--symlink",action="store_true"); s.add_argument("--by"); s.set_defaults(fn=cmd_mv)
+    s=sub.add_parser("render");s.set_defaults(fn=cmd_render)
+    s=sub.add_parser("export");s.set_defaults(fn=cmd_export)
+    s=sub.add_parser("audit"); s.set_defaults(fn=cmd_audit)
+    return p
+
+if __name__=="__main__":
+    args=build_parser().parse_args()
+    args.fn(args)

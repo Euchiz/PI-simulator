@@ -1,0 +1,22 @@
+# The blackboard ($LAB_HOME) is DATA, never code. Nothing below belongs in this repo.
+*.db
+*.db-journal
+*.csv
+inbox/
+meeting/
+alerts/
+archive/
+decisions/
+.watch/
+.work/
+.roster.tsv
+registry.md
+BOARD.md
+DATASETS.md
+HEALTH.md
+digest.md
+external.tsv
+*.bak
+*.bak.*
+__pycache__/
+*.pyc

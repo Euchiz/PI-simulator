@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+"""lab-roster — the active messenger list. Identity = STABLE job id; name is a mutable
+label. A send target is VALID if it's LIVE (watcher process alive) or IDLE (updated within
+LAB_IDLE_MIN minutes, default 360). Used by `lab who` and to validate `lab send`."""
+import json, glob, os, re, sys, time, datetime
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+IDLE_MIN = int(os.environ.get("LAB_IDLE_MIN", "360"))
+
+def pkey(s):
+    return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+
+def watcher_live():
+    live = {}
+    for l in glob.glob(os.path.join(LAB, ".watch", "*.lock")):
+        key = os.path.basename(l)[:-5]
+        try: live[key] = os.path.exists("/proc/%s" % open(l).read().split()[0])
+        except Exception: pass
+    return live
+
+def external_rows(live):
+    """External (non-Claude) agents registered in ~/lab/external.tsv, one per line:
+       key <TAB> jobid <TAB> kind <TAB> note. Always a valid send target; shows LIVE
+       when its watcher lock (held by e.g. lab-codex) has a live pid, else 'ext'."""
+    rows = []
+    try: lines = open(os.path.join(LAB, "external.tsv")).read().splitlines()
+    except Exception: return rows
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#"): continue
+        p = line.split("\t")
+        key = pkey(p[0] if p else "")
+        if not key: continue
+        jid  = (p[1].strip() if len(p) > 1 and p[1].strip() else key)
+        note = (p[3].strip() if len(p) > 3 and p[3].strip() else "external agent")
+        rows.append(dict(key=key, jid=jid, state=note, mins=None,
+                         live=bool(live.get(key)), valid=True, kind="external"))
+    return rows
+
+def roster():
+    live = watcher_live(); now = time.time(); rows = []
+    for sf in glob.glob(os.path.join(HOME, ".claude", "jobs", "*", "state.json")):
+        try: d = json.load(open(sf))
+        except Exception: continue
+        key = pkey(d.get("name", ""))
+        if not key: continue
+        jid = d.get("daemonShort") or os.path.basename(os.path.dirname(sf))
+        try:
+            mins = int((now - datetime.datetime.fromisoformat(
+                d.get("updatedAt","").replace("Z","+00:00")).timestamp())/60)
+        except Exception: mins = None
+        lv = bool(live.get(key))
+        rows.append(dict(key=key, jid=jid, state=d.get("state","?"), mins=mins, live=lv,
+                         valid=lv or (mins is not None and mins <= IDLE_MIN)))
+    rows += external_rows(live)
+    # collapse name collisions -> keep the freshest
+    best = {}
+    for r in rows:
+        b = best.get(r["key"])
+        if not b or (r["mins"] or 1e9) < (b["mins"] or 1e9): best[r["key"]] = r
+    return sorted(best.values(), key=lambda r:(not r["valid"], r["mins"] if r["mins"] is not None else 1e9))
+
+def tag(r):
+    if r.get("kind") == "external":
+        t = "LIVE" if r["live"] else "ext"
+    else:
+        t = "LIVE" if r["live"] else ("idle" if r["valid"] else "stale")
+    m = "?" if r["mins"] is None else (f"{r['mins']}m" if r["mins"] < 120 else f"{r['mins']//60}h")
+    return t, m
+
+def print_targets(rs, f=sys.stderr):
+    print("  current valid targets:", file=f)
+    for r in rs:
+        if r["valid"]:
+            t,m = tag(r); print(f"    {r['key']:<26} @{r['jid']:<10} {t} {m} ago", file=f)
+
+def cmd_who():
+    rs = roster()
+    print("Active messenger list  (send only to LIVE / idle; ✗ = stale, don't send):")
+    for r in rs:
+        t,m = tag(r); mark = "  " if r["valid"] else " ✗"
+        print(f" {mark} {r['key']:<26} @{r['jid']:<10} {t:<5} {m:>4} ago   {r['state']}")
+    print('\n send:  lab send <name> "subj" "body"   |   by stable id:  lab send @<job-id> …')
+
+def cmd_tsv():
+    for r in roster():
+        print(f"{r['key']}\t{r['jid']}\t{r['state']}\t{r['mins']}\t{int(r['live'])}\t{int(r['valid'])}")
+
+def cmd_resolve(tok):
+    rs = roster()
+    if tok.startswith("@"):
+        m = [r for r in rs if r["jid"] == tok[1:]]
+        if not m: print(f"lab send: no session with job-id '{tok[1:]}'.", file=sys.stderr); print_targets(rs); sys.exit(2)
+        r = m[0]
+    else:
+        k = pkey(tok); m = [r for r in rs if r["key"] == k]
+        if not m: print(f"lab send: no current session named '{k}'.", file=sys.stderr); print_targets(rs); sys.exit(2)
+        r = m[0]
+    if not r["valid"]:
+        t,mm = tag(r); print(f"lab send: '{r['key']}' is {t} ({mm} ago) — not a current target.", file=sys.stderr)
+        print_targets(rs); sys.exit(1)
+    print(r["key"])   # the inbox key to deliver to
+
+USAGE = """lab roster — the active messenger list (identity = stable job id)
+
+  lab roster who                 human-readable roster (same as `lab who`)
+  lab roster tsv                 machine-readable: key<TAB>jobid<TAB>state<TAB>mins<TAB>live<TAB>valid
+  lab roster resolve <name|@id>  print the deliverable inbox key, or exit non-zero if not a
+                                 current target (used to validate `lab send`)
+
+A target is VALID if it is LIVE (watcher running) or idle (updated within
+LAB_IDLE_MIN minutes, default 360). Stale sessions are not valid targets."""
+cmd = sys.argv[1] if len(sys.argv) > 1 else "who"
+if cmd in ("-h","--help","help"): print(USAGE); sys.exit(0)
+if   cmd == "who":     cmd_who()
+elif cmd == "tsv":     cmd_tsv()
+elif cmd == "resolve": cmd_resolve(sys.argv[2] if len(sys.argv) > 2 else "")
+else: print("usage: lab-roster who|tsv|resolve <name|@jobid>", file=sys.stderr); sys.exit(3)

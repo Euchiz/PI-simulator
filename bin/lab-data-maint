@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Daily dataset-registry maintenance (cron). NOT on the write path.
+#   render  -> ~/lab/DATASETS.md   (human snapshot)
+#   export  -> ~/lab/datasets.csv  (git-diffable backup)
+#   audit   -> stat every registered path (never walks a tree); flag dead links
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+export LAB_HOME="${LAB_HOME:-$HOME/lab}"
+export PATH="/usr/local/bin:/usr/bin:/bin"
+D="$SELF/lab-data"
+echo "=== lab-data maint $(date) ==="
+python3 "$D" render
+python3 "$D" export
+python3 "$D" audit || true    # audit exits 2 when paths are missing; that's a report, not a failure

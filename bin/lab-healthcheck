@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""lab-healthcheck — gather lab health facts + heuristic flags. Pure read-only.
+Prints a human/LLM-readable report to stdout. Exit 0 always (judgment is downstream)."""
+import json, os, re, glob, sys, subprocess
+from datetime import datetime, timezone
+
+HOME = os.path.expanduser("~")
+LAB = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+JOBS = os.path.join(HOME, ".claude", "jobs")
+REG = os.path.join(LAB, "registry.md")
+BOARD = os.path.join(LAB, "BOARD.md")
+INBOX = os.path.join(LAB, "inbox")
+
+STALE_WORKING_H = 24      # "working" but untouched this long -> possibly stalled
+INBOX_BACKLOG_H = 48      # unread message older than this -> coordination not picked up
+BOARD_AGING_D   = 7       # open board item older than this -> aging
+
+def pkey(s):
+    return re.sub(r'-+$', '', re.sub(r'^-+', '', re.sub(r'[^a-z0-9]+', '-', (s or '').lower())))[:50]
+
+def now():
+    return datetime.now(timezone.utc)
+
+def parse_iso(s):
+    if not s: return None
+    try:
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+def age_h(dt):
+    if not dt: return None
+    return (now() - dt).total_seconds() / 3600.0
+
+def fmt_age(h):
+    if h is None: return "?"
+    if h < 48: return f"{h:.0f}h"
+    return f"{h/24:.0f}d"
+
+# --- registered lab session keys (from registry) ---
+reg_keys = []
+if os.path.exists(REG):
+    for line in open(REG):
+        m = re.match(r'- \*\*([^*]+)\*\*', line)
+        if m: reg_keys.append(m.group(1).strip())
+
+# --- map job state.json by canonical name ---
+jobs = {}
+for sf in glob.glob(os.path.join(JOBS, "*", "state.json")):
+    try:
+        d = json.load(open(sf))
+    except Exception:
+        continue
+    k = pkey(d.get("name", ""))
+    if k:
+        jobs[k] = d
+
+flags = []
+lines = []
+lines.append(f"LAB HEALTH — {now().strftime('%Y-%m-%d %H:%M UTC')}")
+lines.append(f"Registered sessions: {len(reg_keys)}")
+lines.append("")
+
+for key in reg_keys:
+    d = jobs.get(key)
+    if not d:
+        lines.append(f"[NOJOB] {key:<18} — no job state found")
+        flags.append(f"{key}: no job state on disk (session never started or removed)")
+        continue
+    state = d.get("state", "?")
+    upd = parse_iso(d.get("updatedAt"))
+    a = age_h(upd)
+    inflight = (d.get("inFlight") or {})
+    queued = inflight.get("queued", 0); tasks = inflight.get("tasks", 0)
+    detail = (((d.get("output") or {}).get("result")) or d.get("detail") or "")[:140]
+    tag = "OK"
+    if state in ("blocked", "failed", "error"):
+        tag = state.upper(); flags.append(f"{key}: state={state} — {detail}")
+    elif state == "working" and a is not None and a > STALE_WORKING_H:
+        tag = "STALE"; flags.append(f"{key}: marked working but untouched {fmt_age(a)} — possibly stalled")
+    elif queued and (a is not None and a > STALE_WORKING_H):
+        tag = "STUCK?"; flags.append(f"{key}: {queued} queued tasks, idle {fmt_age(a)}")
+    lines.append(f"[{tag}] {key:<18} state={state:<8} upd {fmt_age(a):>4} ago — {detail}")
+
+# --- inbox backlog ---
+lines.append("")
+lines.append("Inbox:")
+any_inbox = False
+for d in sorted(glob.glob(os.path.join(INBOX, "*"))):
+    if not os.path.isdir(d) or os.path.basename(d).startswith("."): continue
+    key = os.path.basename(d)
+    msgs = glob.glob(os.path.join(d, "*.md"))
+    if not msgs: continue
+    any_inbox = True
+    oldest_h = max((age_h(datetime.fromtimestamp(os.path.getmtime(m), timezone.utc)) or 0) for m in msgs)
+    note = ""
+    if oldest_h > INBOX_BACKLOG_H:
+        note = "  <-- BACKLOG"
+        flags.append(f"{key}: {len(msgs)} unread for {fmt_age(oldest_h)} — not picking up coordination")
+    lines.append(f"  {key}: {len(msgs)} unread (oldest {fmt_age(oldest_h)}){note}")
+if not any_inbox:
+    lines.append("  (all inboxes empty)")
+
+# --- board aging ---
+lines.append("")
+lines.append("Board open items:")
+open_items = []
+if os.path.exists(BOARD):
+    for line in open(BOARD):
+        m = re.match(r'- \[ \] (\d{4}-\d{2}-\d{2}) (.+)', line)
+        if m:
+            try:
+                d0 = datetime.strptime(m.group(1), "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                days = (now() - d0).days
+            except Exception:
+                days = 0
+            open_items.append((days, m.group(2).strip()))
+# NOTE: BOARD.md is an append-only ANNOUNCEMENT log, not a task list — entries are
+# never "closed", so ageing them produced ~100 meaningless flags. Report a count only;
+# actionable work lives in the TASK bulletin below (`lab task`), which IS aged.
+if open_items:
+    recent = [t for d,t in open_items if d <= BOARD_AGING_D]
+    lines.append(f"  {len(open_items)} announcement(s); {len(recent)} in the last {BOARD_AGING_D}d")
+    for days, txt in open_items[-5:]:
+        lines.append(f"  ({days}d) {txt[:90]}")
+else:
+    lines.append("  (none)")
+
+# --- TASK bulletin: this is what actually ages ---
+TASK_STALE_D = 5
+lines.append("")
+lines.append("Tasks (lab task):")
+tdb = os.path.join(LAB, "tasks.db")
+if not os.path.exists(tdb):
+    lines.append("  (no task db yet)")
+else:
+    try:
+        import sqlite3
+        tc = sqlite3.connect(tdb); tc.row_factory = sqlite3.Row
+        rows = tc.execute("SELECT * FROM tasks").fetchall()
+        openr  = [r for r in rows if r["status"] == "open"]
+        taken  = [r for r in rows if r["status"] == "taken"]
+        failed = [r for r in rows if r["status"] == "failed"]
+        lines.append(f"  {len(openr)} unclaimed · {len(taken)} in progress · {len(failed)} failed · {len(rows)} total")
+        def age_days(r):
+            try: return (now() - datetime.fromisoformat(r["updated"]).replace(tzinfo=timezone.utc)).days
+            except Exception: return 0
+        for r in openr:
+            d = age_days(r)
+            if d > TASK_STALE_D:
+                flags.append(f"task #{r['id']} unclaimed {d}d — '{r['title'][:60]}' (tagged: {r['suggested'] or 'nobody'})")
+        for r in taken:
+            d = age_days(r)
+            if d > TASK_STALE_D:
+                flags.append(f"task #{r['id']} taken by {r['taken_by']} but untouched {d}d — '{r['title'][:60]}'")
+        for r in failed:
+            flags.append(f"task #{r['id']} FAILED — '{r['title'][:60]}': {(r['note'] or '')[:60]}")
+        for r in openr[:5] + taken[:5]:
+            lines.append(f"  #{r['id']} [{r['status']}] {r['title'][:70]}")
+    except Exception as e:
+        lines.append(f"  (task db unreadable: {type(e).__name__})")
+
+# --- external reviewers (codex, …): daemon liveness + error counters ---
+# Not project sessions, so they're absent from the registry — checked separately here.
+lines.append("")
+lines.append("External reviewers:")
+ext_keys = []
+extf = os.path.join(LAB, "external.tsv")
+if os.path.exists(extf):
+    for line in open(extf):
+        line = line.strip()
+        if line and not line.startswith("#"):
+            k = line.split("\t")[0].strip()
+            if k: ext_keys.append(k)
+if not ext_keys:
+    lines.append("  (none registered)")
+for k in ext_keys:
+    try:
+        out = subprocess.run([os.path.join(LAB, "bin", "lab"), "ext", k, "status"],
+                             capture_output=True, text=True, timeout=25,
+                             env={**os.environ, "LAB_HOME": LAB}).stdout or ""
+    except Exception as e:
+        lines.append(f"  {k}: status unavailable ({type(e).__name__})")
+        flags.append(f"{k} (external reviewer): status check failed — `lab ext {k} status`")
+        continue
+    live = "LIVE" in (out.splitlines()[0] if out.splitlines() else "")
+    def _n(pat, s=out):
+        m = re.search(pat, s); return int(m.group(1)) if m else 0
+    q, a, fl, rj = _n(r"(\d+) queued"), _n(r"(\d+) answered"), _n(r"(\d+) failed"), _n(r"(\d+) rejected")
+    lines.append(f"  {k}: {'LIVE' if live else 'DOWN'} · {q} queued · {a} answered · {fl} failed · {rj} rejected")
+    if not live:
+        flags.append(f"{k} (external reviewer): daemon DOWN — keepalive should restart it; check `lab ext {k} logs`")
+    if fl:
+        flags.append(f"{k}: {fl} FAILED review(s) — check `lab ext {k} logs`")
+    if rj:
+        flags.append(f"{k}: {rj} message(s) rejected for no subject — the sender must supply a subject")
+    if q > 5:
+        flags.append(f"{k}: {q} reviews queued — possible backlog/stall")
+
+lines.append("")
+lines.append(f"HEURISTIC_FLAGS: {len(flags)}")
+for f in flags:
+    lines.append(f"  - {f}")
+
+print("\n".join(lines))
