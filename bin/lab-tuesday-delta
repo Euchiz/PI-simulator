@@ -6,7 +6,11 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 set -uo pipefail
 export HOME="${HOME:?}"
 export LAB_HOME="${LAB_HOME:-$HOME/lab}"
-[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+# A syntax error here must not brick every command, so validate before sourcing.
+if [ -f "$LAB_HOME/lab.env" ]; then
+  if bash -n "$LAB_HOME/lab.env" 2>/dev/null; then set -a; . "$LAB_HOME/lab.env"; set +a
+  else echo "lab: WARNING — $LAB_HOME/lab.env has a syntax error and was IGNORED (values with spaces need quotes). Check: bash -n $LAB_HOME/lab.env" >&2; fi
+fi
 
 export LAB_FROM=lab-manager
 export PATH="$SELF:/usr/local/bin:/usr/bin:/bin"

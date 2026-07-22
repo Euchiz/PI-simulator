@@ -6,7 +6,11 @@ set -euo pipefail
 LAB_HOME="${LAB_HOME:-$HOME/lab}"
 # Site config: per-install overrides (paths, model, node bin). Never committed —
 # the repo ships generic defaults; your deployment sets reality here.
-[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+# A syntax error here must not brick every command, so validate before sourcing.
+if [ -f "$LAB_HOME/lab.env" ]; then
+  if bash -n "$LAB_HOME/lab.env" 2>/dev/null; then set -a; . "$LAB_HOME/lab.env"; set +a
+  else echo "lab: WARNING — $LAB_HOME/lab.env has a syntax error and was IGNORED (values with spaces need quotes). Check: bash -n $LAB_HOME/lab.env" >&2; fi
+fi
 
 REG="$LAB_HOME/registry.md"
 BOARD="$LAB_HOME/BOARD.md"
