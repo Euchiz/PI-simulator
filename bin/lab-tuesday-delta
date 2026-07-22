@@ -6,9 +6,15 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 set -uo pipefail
 export HOME="${HOME:?}"
 export LAB_HOME="${LAB_HOME:-$HOME/lab}"
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+
 export LAB_FROM=lab-manager
 export PATH="$SELF:/usr/local/bin:/usr/bin:/bin"
 
+# Wording is yours: $LAB_HOME/templates/tuesday-delta.md overrides the default below.
+if [ -f "$LAB_HOME/templates/tuesday-delta.md" ]; then
+  BODY="$(cat "$LAB_HOME/templates/tuesday-delta.md")"
+else
 read -r -d '' BODY <<'EOF' || true
 Tuesday check-in — there is NO meeting in this slot.
 
@@ -22,5 +28,6 @@ If nothing has changed since Monday, do nothing — no reply needed.
 These deltas amend Monday's meeting record; they are not a new meeting. Anything
 you send will be folded into the same week's report/slides.
 EOF
+fi
 
 exec "$SELF/lab" broadcast "Tuesday delta — anything new since Monday's meeting?" "$BODY"

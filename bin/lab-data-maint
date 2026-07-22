@@ -5,6 +5,8 @@
 #   audit   -> stat every registered path (never walks a tree); flag dead links
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 export LAB_HOME="${LAB_HOME:-$HOME/lab}"
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+
 export PATH="/usr/local/bin:/usr/bin:/bin"
 D="$SELF/lab-data"
 echo "=== lab-data maint $(date) ==="

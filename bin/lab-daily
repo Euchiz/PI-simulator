@@ -5,6 +5,8 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 set -uo pipefail
 export HOME="${HOME:?}"
 export LAB_HOME="${LAB_HOME:-$HOME/lab}"
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+
 export PATH="$HOME/.local/bin:$SELF:/usr/local/bin:/usr/bin:/bin"
 TS="$(date +%Y-%m-%d)"
 LOG="$LAB_HOME/HEALTH.md"
@@ -29,7 +31,14 @@ Respond in EXACTLY one of two forms, nothing else:
 HEALTH DATA:
 EOF
 
-VERDICT="$(printf '%s\n%s\n' "$INSTR" "$FACTS" | claude -p --model sonnet 2>/dev/null)"
+# The judgement pass is optional and model-agnostic: set LAB_JUDGE=0 to skip it
+# (you still get the raw facts), or point LAB_JUDGE_CMD at any prompt-in/text-out CLI.
+if [ "${LAB_JUDGE:-1}" = "0" ]; then
+  VERDICT=""
+else
+  VERDICT="$(printf '%s\n%s\n' "$INSTR" "$FACTS" \
+    | ${LAB_JUDGE_CMD:-claude -p --model ${LAB_JUDGE_MODEL:-sonnet}} 2>/dev/null)"
+fi
 [ -n "$VERDICT" ] || VERDICT="OK: (judgment unavailable — see heuristic flags in data below)"
 
 {
@@ -50,7 +59,9 @@ if printf '%s' "$VERDICT" | head -1 | grep -qiE '^FLAG'; then
   mkdir -p "$LAB_HOME/alerts"
   cp "$LOG" "$LAB_HOME/alerts/$TS.md"
   SUMMARY="$(printf '%s' "$VERDICT" | tail -n +2 | head -4)"
-  notify-send "Lab health: issues to review" "$SUMMARY" 2>/dev/null || true
+  # Alert channel is pluggable: notify-send only works on a Linux desktop. Set
+  # LAB_ALERT_CMD to anything that takes "<title>" "<body>" (mail, slack, pushover…).
+  ${LAB_ALERT_CMD:-notify-send} "Lab health: issues to review" "$SUMMARY" 2>/dev/null || true
   echo "[$(date)] FLAGGED -> alerts/$TS.md" >> "$LAB_HOME/alerts/.runlog"
 else
   echo "[$(date)] OK" >> "$LAB_HOME/alerts/.runlog" 2>/dev/null || { mkdir -p "$LAB_HOME/alerts"; echo "[$(date)] OK" >> "$LAB_HOME/alerts/.runlog"; }

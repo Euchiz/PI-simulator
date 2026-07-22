@@ -465,6 +465,11 @@ meeting_convene() {
   local id="$base" n=2
   while [ -d "$MEET/$id" ]; do id="$base-$n"; n=$((n+1)); done   # unique even for several/day
   local dir="$MEET/$id"; mkdir -p "$dir/posts" "$dir/assets"
+  # Agenda wording is yours: drop a $LAB_HOME/templates/meeting-agenda.md to override
+  # the built-in text. $id is substituted; everything else is copied verbatim.
+  if [ -f "$LAB_HOME/templates/meeting-agenda.md" ]; then
+    sed "s/{{id}}/$id/g" "$LAB_HOME/templates/meeting-agenda.md" > "$dir/AGENDA.md"
+  else
   cat > "$dir/AGENDA.md" <<EOF
 # Lab meeting — $id
 Convened: $(ts)
@@ -481,6 +486,7 @@ Post it (use --file for a longer doc with tables/figures):
 Then attend — read everyone else's:
   ~/lab/bin/lab meeting read
 EOF
+  fi
   echo "$id" > "$ACTIVE"
   local sent=0
   while read -r key; do

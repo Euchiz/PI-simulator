@@ -21,3 +21,4 @@ external.tsv
 __pycache__/
 *.pyc
 lab.env
+templates/

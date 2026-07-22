@@ -37,11 +37,17 @@ lab register analysis /path/to/project   # one per session
 **Code and data are separate.** The repo is the code; `$LAB_HOME` (default `~/lab`) holds your
 blackboard — inboxes, meetings, tasks, registry. Nothing in this repo writes research content.
 
-**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically) — scratch
-paths, the external reviewer's model and project root, roster timings. The repo ships generic
-defaults; your deployment sets reality. See [`examples/lab.env.example`](examples/lab.env.example).
-Note the reviewer's work dir should point at **scratch**, not your home filesystem — transcripts
-accumulate.
+**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically). The repo
+ships generic defaults; your deployment sets reality — see [`examples/lab.env.example`](examples/lab.env.example):
+
+- **health-check thresholds** — what counts as a stalled session, an unread backlog, a stale task
+- **the daily judgement pass** — pick the model, point `LAB_JUDGE_CMD` at any prompt-in/text-out CLI,
+  or set `LAB_JUDGE=0` to skip it entirely and just get the raw facts
+- **the alert channel** — `LAB_ALERT_CMD` replaces `notify-send`, which only works on a Linux desktop
+- **the external reviewer** — model, project root, sandbox, timeouts, and a work dir that should point
+  at **scratch** rather than your home filesystem (transcripts accumulate)
+- **wording** — drop `$LAB_HOME/templates/meeting-agenda.md` or `tuesday-delta.md` in to replace the
+  built-in text without editing code
 
 ## What it gives you
 
