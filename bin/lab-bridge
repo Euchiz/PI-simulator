@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# lab-bridge — run an EXTERNAL coding CLI (Codex, Gemini CLI, Aider, opencode, …) as a
+# live lab peer, so any session can ask it for an independent review with:
+#
+#     lab send <agent> "<subject>" "<body>"
+#
+# The bridge is TOOL-AGNOSTIC. Everything specific to a particular CLI lives in an
+# ADAPTER — a small shell file you write once (see `lab ext setup <agent>`). The bridge
+# owns the lab side: polling the inbox, threading by subject, delivery, retries, backoff,
+# the single-instance lock, and registration so `lab who` lists the agent.
+#
+#   lab-bridge <agent>        # normally started via:  lab ext <agent> start
+#
+# ADAPTER CONTRACT — the adapter defines these shell functions:
+#   adapter_preflight        optional. Verify the CLI exists / is authenticated. Non-zero aborts.
+#   adapter_run              REQUIRED. Run one request; write the reply to $OUT_FILE; return rc.
+#   adapter_capture_session  optional. Echo a session id to persist for threading.
+#                            Echo nothing if the tool has no resumable sessions.
+#   adapter_is_transient     optional. Return 0 if $LOG_FILE shows a retryable rate-limit/quota.
+# Environment handed to the adapter:
+#   AGENT PROMPT_FILE OUT_FILE LOG_FILE SESSION_ID PROJECT TIMEOUT RUN_MARKER
+set -uo pipefail
+
+AGENT="${1:-}"
+[ -n "$AGENT" ] || { echo "usage: lab-bridge <agent>   (see: lab ext setup <agent>)" >&2; exit 2; }
+
+LAB_HOME="${LAB_HOME:-$HOME/lab}"
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+
+LAB="$SELF/lab"
+KEY="$AGENT"
+INBOX="$LAB_HOME/inbox/$KEY"
+LOCKDIR="$LAB_HOME/.watch"
+LOCK="$LOCKDIR/$KEY.lock"
+EXT="$LAB_HOME/external.tsv"
+THREADS="$LOCKDIR/$KEY.threads"          # subject-key -> session-id map (conversation memory)
+
+# Framework knobs. Tool knobs (model, sandbox, …) belong to the adapter.
+INTERVAL="${LAB_EXT_INTERVAL:-30}"       # inbox poll seconds
+TIMEOUT="${LAB_EXT_TIMEOUT:-900}"        # per-request seconds
+BACKOFF="${LAB_EXT_BACKOFF:-900}"        # sleep after a transient/quota failure
+PROJECT="${LAB_EXT_CD:-$PWD}"            # working root the reviewer inspects
+WORK="${LAB_EXT_WORK:-$LAB_HOME/.work/$KEY}"   # prompts+outputs — point at SCRATCH, not $HOME
+[ -n "${LAB_NODE_BIN:-}" ] && export PATH="$LAB_NODE_BIN:$PATH"
+
+# --- load the adapter -------------------------------------------------------------
+find_adapter() {
+  local c
+  for c in "${LAB_EXT_ADAPTER:-}" "$LAB_HOME/adapters/$KEY.sh" "$SELF/../adapters/$KEY.sh"; do
+    [ -n "$c" ] && [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+ADAPTER="$(find_adapter)" || {
+  echo "lab-bridge: no adapter for '$KEY'." >&2
+  echo "  Create one with:   lab ext setup $KEY" >&2
+  echo "  (searched \$LAB_EXT_ADAPTER, $LAB_HOME/adapters/$KEY.sh, and the shipped adapters/)" >&2
+  exit 3; }
+# shellcheck disable=SC1090
+. "$ADAPTER"
+command -v adapter_run >/dev/null || { echo "lab-bridge: $ADAPTER defines no adapter_run()" >&2; exit 3; }
+command -v adapter_capture_session >/dev/null || adapter_capture_session() { :; }
+command -v adapter_is_transient    >/dev/null || adapter_is_transient() { return 1; }
+command -v adapter_preflight       >/dev/null || adapter_preflight() { :; }
+adapter_preflight || { echo "lab-bridge: '$KEY' preflight failed (see $ADAPTER)" >&2; exit 3; }
+
+mkdir -p "$INBOX/.read" "$INBOX/.failed" "$INBOX/.rejected" "$LOCKDIR" "$WORK"
+
+# register as an external agent so `lab who` lists it and `lab send` accepts it
+TAB="$(printf '\t')"; touch "$EXT"
+grep -q "^${KEY}${TAB}" "$EXT" 2>/dev/null \
+  || printf '%s\t%s\texternal\t%s\n' "$KEY" "$KEY" "${LAB_EXT_NOTE:-external reviewer ($KEY)}" >> "$EXT"
+
+# single-instance guard: take over only a DEAD lock, never a live one
+if [ -f "$LOCK" ]; then
+  old_pid="$(cut -d' ' -f1 "$LOCK" 2>/dev/null || true)"
+  if [ -n "${old_pid:-}" ] && [ "$old_pid" != "$$" ] && kill -0 "$old_pid" 2>/dev/null \
+     && tr '\0' ' ' < "/proc/$old_pid/cmdline" 2>/dev/null | grep -q 'lab-bridge'; then
+    echo "lab-bridge: '$KEY' already running (pid $old_pid) — exiting." >&2; exit 0
+  fi
+fi
+printf '%s %s\n' "$$" "$KEY-bridge" > "$LOCK"
+cleanup() { [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; rm -f "$LOCK" 2>/dev/null || true; }
+trap cleanup EXIT; trap 'cleanup; exit 143' TERM; trap 'cleanup; exit 130' INT
+
+echo "[$KEY] LIVE (pid $$) — polling $INBOX every ${INTERVAL}s"
+echo "[$KEY]   adapter=$ADAPTER"
+echo "[$KEY]   cd=$PROJECT  timeout=${TIMEOUT}s  work=$WORK"
+echo "[$KEY]   threaded by subject (map: $THREADS)"
+
+# --- the brief prepended to every NEW thread --------------------------------------
+# Your wording: drop $LAB_HOME/templates/reviewer-brief.md to replace this ({{agent}} substituted).
+BRIEF_FILE="${LAB_EXT_BRIEF:-$LAB_HOME/templates/reviewer-brief.md}"
+if [ -f "$BRIEF_FILE" ]; then
+  HOUSE="$(sed "s/{{agent}}/$KEY/g" "$BRIEF_FILE")"
+else
+read -r -d '' HOUSE <<EOF || true
+You are "$KEY" — an EXTERNAL, independent peer reviewer for a team of AI coding agents working
+on one project. They message you for a skeptical second opinion, a code or method review, or an
+independent check of a claim. Be rigorous, concrete and brief. Prefer verifying against the
+actual files in your working directory over speculation, and say plainly when something is
+wrong, unsupported, or a likely artifact.
+
+Review only. You may run bounded, read-only inspection commands to verify claims. Do NOT create,
+modify, move or delete files, start jobs, or perform external mutations. If a useful check would
+require writing files, report that limitation rather than working around it. Never delete,
+overwrite or relocate any data or result without explicit human approval.
+
+Keep shell commands cheap and narrowly scoped — you may be sharing a machine with other agents.
+Never run broad filesystem scans rooted at a mount root.
+
+Your FINAL message is delivered verbatim to the requester, so make it the answer itself
+(findings + reasoning), not a summary of what you did.
+EOF
+fi
+
+# --- conversation threading: the message SUBJECT is the session key ----------------
+thread_key() {
+  printf '%s' "$1" | sed -E 's/^([[:space:]]*[Rr][Ee]:[[:space:]]*)+//' \
+   | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-80
+}
+threads_get() { [ -f "$THREADS" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$THREADS" || true; }
+threads_put() {
+  local k="$1" sid="$2" subj="$3" now created
+  now="$(date +%Y-%m-%dT%H:%M:%S)"; touch "$THREADS"
+  created="$(awk -F'\t' -v k="$k" '$1==k{print $3; exit}' "$THREADS")"; [ -n "$created" ] || created="$now"
+  { awk -F'\t' -v k="$k" 'BEGIN{OFS="\t"} $1!=k{print}' "$THREADS"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$k" "$sid" "$created" "$now" "$subj"; } > "$THREADS.tmp" && mv "$THREADS.tmp" "$THREADS"
+}
+
+process_one() {
+  local f="$1" from subj body tkey sid mode rc reply newsid have note
+  from="$(sed -n 's/^from: //p' "$f" | head -1)"
+  subj="$(sed -n 's/^subject: //p' "$f" | head -1)"
+  body="$(sed '1,/^---$/d; /^---$/d' "$f" | sed '/./,$!d')"
+  tkey="$(thread_key "$subj")"
+
+  # the SUBJECT is the routing + threading key: bounce anything without a usable one
+  if [ -z "$tkey" ]; then
+    note="[$KEY] Your message arrived without a usable subject line, and I use the SUBJECT as the conversation key (I route and thread by it). Please resend with a short descriptive subject — e.g.  lab send $KEY \"caching approach — sane?\" \"...\"  — and reuse that same subject to continue the thread."
+    LAB_FROM="$KEY" "$LAB" send --force "$from" "re: (no subject)" "$note" >/dev/null 2>&1 || true
+    mv "$f" "$INBOX/.rejected/" 2>/dev/null || true
+    echo "[$KEY] rejected a message from '$from' — no usable subject"; return 0
+  fi
+
+  sid="$(threads_get "$tkey")"
+  export PROMPT_FILE="$WORK/$tkey.prompt" OUT_FILE="$WORK/$tkey.out" LOG_FILE="$WORK/$tkey.log"
+  export RUN_MARKER="$WORK/.$tkey.marker" SESSION_ID="$sid" AGENT="$KEY" PROJECT TIMEOUT
+  : > "$OUT_FILE"
+
+  if [ -n "$sid" ]; then
+    mode="resume $sid"   # the tool still holds the brief + prior turns; send only what's new
+    printf '=== new message in this thread ===\nFrom: %s\nSubject: %s\n\n%s\n\n(Reply with the answer itself; it is delivered verbatim to the requester.)\n' \
+      "$from" "$subj" "$body" > "$PROMPT_FILE"
+  else
+    mode="new session"
+    { printf '%s\n\n' "$HOUSE"
+      printf '=== incoming lab message ===\nFrom: %s\nSubject: %s\n\n%s\n' "$from" "$subj" "$body"; } > "$PROMPT_FILE"
+  fi
+
+  echo "[$KEY] $(date +%T) handling '$subj' from '$from' [$mode]"
+  : > "$RUN_MARKER"
+  rc=0; adapter_run || rc=$?
+
+  # transient quota/rate-limit -> leave it queued and back off
+  if [ "$rc" -ne 0 ] && adapter_is_transient; then
+    echo "[$KEY] transient failure (rc=$rc) — leaving '$subj' queued, backing off ${BACKOFF}s" >&2
+    rm -f "$RUN_MARKER"; sleep "$BACKOFF"; return 0
+  fi
+
+  if [ "$rc" -eq 0 ] && [ -s "$OUT_FILE" ]; then
+    reply="$(cat "$OUT_FILE")"
+    if LAB_FROM="$KEY" "$LAB" send --force "$from" "re: $subj" "$reply" >/dev/null 2>&1; then
+      echo "[$KEY] -> replied to '$from' [$mode]"; mv "$f" "$INBOX/.read/" 2>/dev/null || true
+    else
+      echo "[$KEY] delivery to '$from' failed — keeping message for retry" >&2
+      rm -f "$RUN_MARKER"; return 0
+    fi
+    newsid="$(adapter_capture_session)"
+    if [ -n "$newsid" ]; then threads_put "$tkey" "$newsid" "$subj"
+    elif [ -z "$sid" ]; then echo "[$KEY] note: adapter captured no session id — '$subj' will not thread" >&2; fi
+  else
+    [ -s "$OUT_FILE" ] && have="present" || have="empty"
+    reply="[$KEY] Your request could not be completed (exit=$rc, output $have). Log: $LOG_FILE"
+    LAB_FROM="$KEY" "$LAB" send --force "$from" "re: $subj" "$reply" >/dev/null 2>&1 || true
+    mv "$f" "$INBOX/.failed/" 2>/dev/null || true
+    echo "[$KEY] FAILED '$subj' (rc=$rc) — see $LOG_FILE" >&2
+  fi
+  rm -f "$RUN_MARKER"
+}
+
+while true; do
+  for f in "$INBOX"/*.md; do [ -e "$f" ] || continue; process_one "$f"; done
+  sleep "$INTERVAL" & SLEEP_PID=$!; wait "$SLEEP_PID" 2>/dev/null; SLEEP_PID=""
+done

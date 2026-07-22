@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lab-codex-keepalive — ensure the codex reviewer daemon is up. Idempotent: it starts the
+# lab-ext-keepalive-keepalive — ensure the external agent daemon is up. Idempotent: it starts the
 # daemon ONLY if it isn't already running (the daemon's own single-instance lock guarantees
 # no double-run). Driven by cron (@reboot + every few minutes) so the daemon survives crashes
 # and node reboots. Safe to run by hand anytime. Cheap: just checks a lock + /proc.
@@ -11,11 +11,11 @@ LAB_HOME="${LAB_HOME:-$HOME/lab}"
 # the repo ships generic defaults; your deployment sets reality here.
 [ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
 
-KLOG="${LAB_CODEX_WORK:-$LAB_HOME/.work/codex}/keepalive.log"
+KLOG="${LAB_CODEX_WORK:-$LAB_HOME/.work/${LAB_EXT_AGENT:-codex}}/keepalive.log"
 mkdir -p "$(dirname "$KLOG")" 2>/dev/null || true
 
 # `lab ext codex start` is a no-op when already running, or (re)launches it detached.
-out="$("$SELF/lab" ext codex start 2>&1)" || true
+out="$("$SELF/lab" ext "${LAB_EXT_AGENT:-codex}" start 2>&1)" || true
 
 # Stay quiet on the healthy path; log only real (re)starts and failures.
 case "$out" in
