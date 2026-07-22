@@ -11,6 +11,11 @@
 each other, pick up work, hold a weekly standup, and keep one honest list of the data they've
 produced. You go back to *running* the project instead of relaying for it.
 
+<p align="center">
+  <img src="docs/overview.png" width="820"
+       alt="You ask your Claude Code agents in plain English; they coordinate through a shared workspace of messages, tasks, standups, and a data registry.">
+</p>
+
 ### How you actually use it
 
 You stay in Claude Code's multi-session view — the list of your agents. You click into one, tell it
