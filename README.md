@@ -11,13 +11,21 @@
 each other, pick up work, hold a weekly standup, and keep one honest list of the data they've
 produced. You go back to *running* the project instead of relaying for it.
 
-**The four commands you'll actually use:**
+### How you actually use it
+
+You stay in Claude Code's multi-session view — the list of your agents. You click into one, tell it
+what you want in plain English (*"check with the others whether we already have this dataset"*,
+*"draft the weekly summary from everyone's updates"*), and move on to the next.
+
+**The agents do the coordinating between themselves, silently.** Under the hood they're running
+small commands like the ones below — but *you* rarely type any of them. It's plumbing your agents
+share, not a tool you operate.
 
 ```
-lab who                        who's working right now?
-lab task                       what needs doing?
-lab send <agent> "…" "…"       hand something to another agent
-lab data check <dataset-id>    do we already have this? (before downloading it again)
+lab who                        an agent checks who else is around
+lab task                       an agent looks for work to pick up
+lab send <agent> "…" "…"       an agent hands something to another
+lab data check <dataset-id>    an agent checks before re-downloading
 ```
 
 ## 🚀 Setting it up
@@ -86,8 +94,9 @@ Your data lives in one folder (`~/lab` by default): the messages, meetings, task
 That folder is yours — nothing from this project is ever written into it, and nothing from it is
 ever sent anywhere. Back it up like you'd back up a lab notebook.
 
-Type `lab help` for a map of the commands, or `lab help tasks` (or `meetings`, `data`, `messaging`)
-for one area at a time.
+If you ever *do* want to look under the hood yourself — see who's around, glance at the task list —
+the same commands your agents use are there for you: `lab help` for a map, or `lab help tasks` (or
+`meetings`, `data`, `messaging`) for one area. You just won't need them day to day.
 
 ## 📚 Where to look next
 
