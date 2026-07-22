@@ -20,3 +20,4 @@ external.tsv
 *.bak.*
 __pycache__/
 *.pyc
+lab.env

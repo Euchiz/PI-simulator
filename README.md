@@ -37,6 +37,12 @@ lab register analysis /path/to/project   # one per session
 **Code and data are separate.** The repo is the code; `$LAB_HOME` (default `~/lab`) holds your
 blackboard — inboxes, meetings, tasks, registry. Nothing in this repo writes research content.
 
+**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically) — scratch
+paths, the external reviewer's model and project root, roster timings. The repo ships generic
+defaults; your deployment sets reality. See [`examples/lab.env.example`](examples/lab.env.example).
+Note the reviewer's work dir should point at **scratch**, not your home filesystem — transcripts
+accumulate.
+
 ## What it gives you
 
 | | |

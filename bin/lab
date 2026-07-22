@@ -4,6 +4,10 @@
 set -euo pipefail
 
 LAB_HOME="${LAB_HOME:-$HOME/lab}"
+# Site config: per-install overrides (paths, model, node bin). Never committed —
+# the repo ships generic defaults; your deployment sets reality here.
+[ -f "$LAB_HOME/lab.env" ] && { set -a; . "$LAB_HOME/lab.env"; set +a; }
+
 REG="$LAB_HOME/registry.md"
 BOARD="$LAB_HOME/BOARD.md"
 INBOX="$LAB_HOME/inbox"
