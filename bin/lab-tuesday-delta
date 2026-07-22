@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Tuesday check-in — NOT a meeting. Asks every session for an incremental update
+# since Monday's meeting, sent to the lab manager. Monday's meeting record is the
+# base; these deltas amend it, so no second full meeting is convened.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+set -uo pipefail
+export HOME="${HOME:?}"
+export LAB_HOME="${LAB_HOME:-$HOME/lab}"
+export LAB_FROM=lab-manager
+export PATH="$SELF:/usr/local/bin:/usr/bin:/bin"
+
+read -r -d '' BODY <<'EOF' || true
+Tuesday check-in — there is NO meeting in this slot.
+
+If you have NEW results or changes since your Monday meeting post, send them
+straight to the lab manager (short is fine — just the delta, not a full update):
+
+  ~/lab/bin/lab send lab-manager "<short subject>" "<what changed since Monday>"
+
+If nothing has changed since Monday, do nothing — no reply needed.
+
+These deltas amend Monday's meeting record; they are not a new meeting. Anything
+you send will be folded into the same week's report/slides.
+EOF
+
+exec "$SELF/lab" broadcast "Tuesday delta — anything new since Monday's meeting?" "$BODY"

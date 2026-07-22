@@ -1,0 +1,226 @@
+#!/usr/bin/env python3
+"""lab-task — the lab TASK bulletin (distinct from ~/lab/BOARD.md, which is an
+append-only ANNOUNCEMENT log).
+
+Model (deliberate):
+  * tags are SUGGESTIONS, not assignments — "see if you can help". Each tagged
+    agent gets a short notice. A task with no tags is open to anyone.
+  * `take` is the real claim. You CANNOT take an already-taken task — that is the
+    collision guard. Release with `drop`.
+  * done/fail notify the CREATOR, closing the loop.
+
+SQLite at $LAB_HOME/tasks.db. NFS-safe: flock-guarded writes, rollback journal.
+"""
+import sqlite3, sys, os, re, json, fcntl, argparse, datetime, subprocess
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+DB   = os.path.join(LAB, "tasks.db")
+LOCK = os.path.join(LAB, ".tasks.lock")
+OPEN_STATES = ("open", "taken")
+
+def now(): return datetime.datetime.now().isoformat(timespec="seconds")
+def pkey(s):
+    return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+
+def me():
+    jd, sid = os.environ.get("CLAUDE_JOB_DIR",""), os.environ.get("CLAUDE_CODE_SESSION_ID","")
+    for c in [os.path.join(jd,"state.json") if jd else "",
+              os.path.join(os.path.dirname(jd),"state.json") if jd else "",
+              os.path.join(HOME,".claude","jobs",sid.split("-")[0],"state.json") if sid else ""]:
+        if c and os.path.isfile(c):
+            try: return pkey(json.load(open(c)).get("name",""))
+            except Exception: pass
+    return pkey(os.environ.get("LAB_FROM","")) or "unknown"
+
+def die(msg, code=1): print(f"lab task: {msg}", file=sys.stderr); sys.exit(code)
+
+def connect():
+    con = sqlite3.connect(DB, timeout=30); con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=DELETE"); con.execute("PRAGMA busy_timeout=30000")
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS tasks(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL, description TEXT NOT NULL,
+      suggested TEXT,            -- comma-sep agent keys tagged to "see if you can help"
+      taken_by TEXT,             -- single claimer; NULL = open to anyone
+      status TEXT NOT NULL,      -- open | taken | done | failed | cancelled
+      note TEXT, priority TEXT,
+      created_by TEXT NOT NULL, created TEXT NOT NULL,
+      updated TEXT NOT NULL, updated_by TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_status ON tasks(status);
+    CREATE INDEX IF NOT EXISTS ix_taken  ON tasks(taken_by);
+    """); con.commit(); return con
+
+class Lock:
+    def __enter__(self):
+        os.makedirs(LAB, exist_ok=True)
+        self.f=open(LOCK,"w"); fcntl.flock(self.f, fcntl.LOCK_EX); return self
+    def __exit__(self,*a): fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+
+def notify(to, subj, body):
+    """Send an inbox notice. --force: the task record is durable, so the notice should
+    land even if the recipient is currently idle/stale and reads it when it returns."""
+    to = pkey(to or "")
+    if not to or to == me(): return
+    try:
+        subprocess.run([os.path.join(LAB,"bin","lab"),"send","--force",to,subj,body],
+                       capture_output=True, text=True, timeout=20,
+                       env={**os.environ, "LAB_HOME": LAB})
+    except Exception as e:
+        print(f"  (notice to {to} failed: {type(e).__name__})", file=sys.stderr)
+
+def row(con, tid):
+    r = con.execute("SELECT * FROM tasks WHERE id=?", (tid,)).fetchone()
+    if not r: die(f"no task #{tid}", 3)
+    return r
+
+def fmt_line(r):
+    who = r["taken_by"] or "—"
+    sug = f" tag:{r['suggested']}" if r["suggested"] else ""
+    pri = f" !{r['priority']}" if r["priority"] else ""
+    return f"  #{r['id']:<4} [{r['status']:<6}] {r['title'][:56]:<56} taken:{who:<14}{sug}{pri}"
+
+# ---------- commands ----------
+def cmd_add(a):
+    tags = [pkey(t) for t in (a.tag or []) if pkey(t)]
+    if not a.title or not a.desc: die("--title and --desc are both required", 2)
+    who = me()
+    with Lock():
+        con = connect()
+        cur = con.execute(
+          "INSERT INTO tasks (title,description,suggested,taken_by,status,priority,created_by,created,updated,updated_by)"
+          " VALUES (?,?,?,NULL,'open',?,?,?,?,?)",
+          (a.title, a.desc, ",".join(tags) or None, a.priority, who, now(), now(), who))
+        tid = cur.lastrowid; con.commit()
+    print(f"lab task: created #{tid} — {a.title}")
+    for t in tags:
+        notify(t, f"[task #{tid}] can you help? — {a.title}",
+               f"You were tagged on task #{tid} (a SUGGESTION, not an assignment — see if you can help).\n\n"
+               f"TITLE: {a.title}\n\n{a.desc}\n\n"
+               f"  ~/lab/bin/lab task show {tid}\n"
+               f"  ~/lab/bin/lab task take {tid}     # claim it (fails if someone already took it)\n"
+               f"If you can't help, ignore this — someone else can take it.\nCreator: {who}")
+        print(f"  tagged {t} (notice sent)")
+    if not tags: print("  (untagged — open for anyone to take)")
+
+def cmd_list(a):
+    con = connect(); q="SELECT * FROM tasks"; w=[]; args=[]
+    if a.all: pass
+    elif a.status: w.append("status=?"); args.append(a.status)
+    elif a.open:   w.append("status='open'")               # unclaimed = free for ANYONE to take
+    elif a.mine:   w.append("taken_by=?"); args.append(me())
+    elif a.tagged: w.append("(','||suggested||',') LIKE ?"); args.append(f"%,{me()},%")
+    else: w.append("status IN ('open','taken')")          # default = incomplete
+    if w: q += " WHERE " + " AND ".join(w)
+    q += " ORDER BY (status='taken') DESC, id"
+    rows = con.execute(q, args).fetchall()
+    label = ("all" if a.all else a.status or ("unclaimed" if a.open else
+             ("mine" if a.mine else ("tagged-me" if a.tagged else "incomplete"))))
+    print(f"{len(rows)} task(s) [{label}]:")
+    for r in rows: print(fmt_line(r))
+    if not rows: print("  (nothing here)")
+    free = [r for r in rows if r["status"] == "open"]
+    if free and not a.open:
+        print(f"  → {len(free)} unclaimed and free for anyone to take "
+              f"(tags are only suggestions): lab task take <id>")
+
+def cmd_show(a):
+    con = connect(); r = row(con, a.id)
+    print(f"#{r['id']}  [{r['status']}]  {r['title']}")
+    print(f"  created by : {r['created_by']}  ({r['created']})")
+    print(f"  tagged     : {r['suggested'] or '(none — open to anyone)'}")
+    print(f"  taken by   : {r['taken_by'] or '(unclaimed)'}")
+    if r["priority"]: print(f"  priority   : {r['priority']}")
+    print(f"  updated    : {r['updated']} by {r['updated_by']}")
+    print(f"\n{r['description']}\n")
+    if r["note"]: print(f"  note: {r['note']}")
+
+def cmd_take(a):
+    who = me()
+    with Lock():
+        con = connect(); r = row(con, a.id)
+        if r["status"] in ("done","failed","cancelled"): die(f"#{a.id} is already {r['status']}.", 4)
+        if r["taken_by"]:                                  # the collision guard
+            if r["taken_by"] == who: die(f"you already have #{a.id}.", 0)
+            die(f"#{a.id} is already taken by '{r['taken_by']}' — you cannot take it. "
+                f"Ask them, or pick another with `lab task list`.", 4)
+        con.execute("UPDATE tasks SET taken_by=?,status='taken',updated=?,updated_by=? WHERE id=?",
+                    (who, now(), who, a.id)); con.commit()
+    print(f"lab task: you took #{a.id} — {r['title']}")
+    notify(r["created_by"], f"[task #{a.id}] taken by {who}", f"{who} took your task #{a.id}: {r['title']}")
+
+def cmd_drop(a):
+    who = me()
+    with Lock():
+        con = connect(); r = row(con, a.id)
+        if r["taken_by"] != who: die(f"#{a.id} isn't taken by you (taken by '{r['taken_by'] or 'nobody'}').", 4)
+        con.execute("UPDATE tasks SET taken_by=NULL,status='open',updated=?,updated_by=? WHERE id=?",
+                    (now(), who, a.id)); con.commit()
+    print(f"lab task: released #{a.id} — it's open again")
+    notify(r["created_by"], f"[task #{a.id}] released by {who}", f"{who} released #{a.id}: {r['title']} — it's open for anyone again.")
+
+def _close(a, new_status):
+    who = me()
+    if new_status == "failed" and not a.note: die("--note is required when failing a task (say why).", 2)
+    with Lock():
+        con = connect(); r = row(con, a.id)
+        if r["status"] in ("done","failed","cancelled"): die(f"#{a.id} is already {r['status']}.", 4)
+        if r["taken_by"] and r["taken_by"] != who and r["created_by"] != who:
+            die(f"#{a.id} is taken by '{r['taken_by']}' — only they (or the creator) can close it.", 4)
+        con.execute("UPDATE tasks SET status=?,note=?,updated=?,updated_by=? WHERE id=?",
+                    (new_status, a.note, now(), who, a.id)); con.commit()
+    print(f"lab task: #{a.id} marked {new_status.upper()}")
+    verb = "COMPLETED" if new_status=="done" else "FAILED"
+    notify(r["created_by"], f"[task #{a.id}] {verb} by {who} — {r['title']}",
+           f"Task #{a.id} you created was marked {verb} by {who}.\n\nTITLE: {r['title']}\n"
+           f"NOTE: {a.note or '(none)'}\n\n  ~/lab/bin/lab task show {a.id}")
+
+def cmd_done(a):   _close(a, "done")
+def cmd_fail(a):   _close(a, "failed")
+
+def cmd_cancel(a):
+    who = me()
+    with Lock():
+        con = connect(); r = row(con, a.id)
+        if r["created_by"] != who: die(f"only the creator ('{r['created_by']}') can cancel #{a.id}.", 4)
+        con.execute("UPDATE tasks SET status='cancelled',note=?,updated=?,updated_by=? WHERE id=?",
+                    (a.note, now(), who, a.id)); con.commit()
+    print(f"lab task: #{a.id} cancelled")
+    if r["taken_by"]: notify(r["taken_by"], f"[task #{a.id}] cancelled", f"{who} cancelled #{a.id}: {r['title']}")
+
+def cmd_tag(a):
+    who = me(); t = pkey(a.agent)
+    with Lock():
+        con = connect(); r = row(con, a.id)
+        cur = [x for x in (r["suggested"] or "").split(",") if x]
+        if t in cur: die(f"{t} is already tagged on #{a.id}.", 0)
+        cur.append(t)
+        con.execute("UPDATE tasks SET suggested=?,updated=?,updated_by=? WHERE id=?",
+                    (",".join(cur), now(), who, a.id)); con.commit()
+    print(f"lab task: tagged {t} on #{a.id}")
+    notify(t, f"[task #{a.id}] can you help? — {r['title']}",
+           f"You were tagged on task #{a.id} (a suggestion — see if you can help).\n\n"
+           f"TITLE: {r['title']}\n\n{r['description']}\n\n"
+           f"  ~/lab/bin/lab task show {a.id}\n  ~/lab/bin/lab task take {a.id}\nTagged by: {who}")
+
+def build():
+    p=argparse.ArgumentParser(prog="lab task"); s=p.add_subparsers(dest="c", required=True)
+    x=s.add_parser("add");  x.add_argument("--title",required=True); x.add_argument("--desc",required=True)
+    x.add_argument("--tag",action="append",help="suggest an agent (repeatable)"); x.add_argument("--priority")
+    x.set_defaults(fn=cmd_add)
+    x=s.add_parser("list"); x.add_argument("--all",action="store_true"); x.add_argument("--mine",action="store_true")
+    x.add_argument("--open",action="store_true",help="unclaimed only — free for anyone to take")
+    x.add_argument("--tagged",action="store_true"); x.add_argument("--status"); x.set_defaults(fn=cmd_list)
+    x=s.add_parser("show"); x.add_argument("id",type=int); x.set_defaults(fn=cmd_show)
+    x=s.add_parser("take"); x.add_argument("id",type=int); x.set_defaults(fn=cmd_take)
+    x=s.add_parser("drop"); x.add_argument("id",type=int); x.set_defaults(fn=cmd_drop)
+    x=s.add_parser("done"); x.add_argument("id",type=int); x.add_argument("--note"); x.set_defaults(fn=cmd_done)
+    x=s.add_parser("fail"); x.add_argument("id",type=int); x.add_argument("--note"); x.set_defaults(fn=cmd_fail)
+    x=s.add_parser("cancel"); x.add_argument("id",type=int); x.add_argument("--note"); x.set_defaults(fn=cmd_cancel)
+    x=s.add_parser("tag"); x.add_argument("id",type=int); x.add_argument("agent"); x.set_defaults(fn=cmd_tag)
+    return p
+
+if __name__=="__main__":
+    if len(sys.argv) == 1: sys.argv.append("list")   # bare `lab task` = show what's outstanding
+    a=build().parse_args(); a.fn(a)

@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# lab-daily — daily lab health check. Gathers facts, asks the lab-manager (headless
+# claude) to judge what's worth flagging, writes HEALTH.md, and alerts only on issues.
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+set -uo pipefail
+export HOME="${HOME:?}"
+export LAB_HOME="${LAB_HOME:-$HOME/lab}"
+export PATH="$HOME/.local/bin:$SELF:/usr/local/bin:/usr/bin:/bin"
+TS="$(date +%Y-%m-%d)"
+LOG="$LAB_HOME/HEALTH.md"
+
+FACTS="$(python3 "$SELF/lab-healthcheck" 2>&1)"
+
+read -r -d '' INSTR <<'EOF' || true
+You are the lab manager running a DAILY health check over a set of Claude coding
+sessions that share a coordination blackboard. Below is today's machine-gathered
+health data. Decide whether anything is genuinely worth pulling the user's
+attention to. Be conservative: a session that is freshly "working" or cleanly
+"done" is fine and needs no flag. Worth flagging: a session marked working but
+untouched >24h (possibly stalled), blocked/failed/errored states that look stuck,
+a session waiting on a coordination message that isn't coming, unread inbox
+backlog (sessions not picking up coordination), or board items aging unresolved.
+
+Respond in EXACTLY one of two forms, nothing else:
+- If nothing needs attention:  OK: <6-12 word summary>
+- If something does:  first line exactly "FLAG", then 2-5 terse bullets ("- ..."),
+  each naming one concern AND why it matters / what to do. No preamble.
+
+HEALTH DATA:
+EOF
+
+VERDICT="$(printf '%s\n%s\n' "$INSTR" "$FACTS" | claude -p --model sonnet 2>/dev/null)"
+[ -n "$VERDICT" ] || VERDICT="OK: (judgment unavailable — see heuristic flags in data below)"
+
+{
+  echo "# Lab health — $(date '+%Y-%m-%d %H:%M %Z')"
+  echo
+  echo "$VERDICT"
+  echo
+  echo "<details><summary>raw health data</summary>"
+  echo
+  echo '```'
+  echo "$FACTS"
+  echo '```'
+  echo "</details>"
+} > "$LOG"
+
+# Alert only when flagged.
+if printf '%s' "$VERDICT" | head -1 | grep -qiE '^FLAG'; then
+  mkdir -p "$LAB_HOME/alerts"
+  cp "$LOG" "$LAB_HOME/alerts/$TS.md"
+  SUMMARY="$(printf '%s' "$VERDICT" | tail -n +2 | head -4)"
+  notify-send "Lab health: issues to review" "$SUMMARY" 2>/dev/null || true
+  echo "[$(date)] FLAGGED -> alerts/$TS.md" >> "$LAB_HOME/alerts/.runlog"
+else
+  echo "[$(date)] OK" >> "$LAB_HOME/alerts/.runlog" 2>/dev/null || { mkdir -p "$LAB_HOME/alerts"; echo "[$(date)] OK" >> "$LAB_HOME/alerts/.runlog"; }
+fi

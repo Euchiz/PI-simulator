@@ -1,0 +1,32 @@
+<!-- Paste into each agent's CLAUDE.md so it knows the protocol at session start. -->
+
+## Lab coordination
+
+You are one of several Claude sessions on a shared program, coordinating through `$LAB_HOME`
+via the `lab` CLI. You are identified by your **session name**; the CLI resolves it.
+
+**Inbox:** `lab read` (a SessionStart hook runs this for you; run again anytime).
+
+**Messaging:** `lab who` to see who is reachable, then `lab send <session> "<subject>" "<body>"`.
+`lab send` only delivers to a CURRENT session — if the name is stale/renamed/unknown it refuses
+and shows `lab who`. Send by stable id with `lab send @<job-id>`. A renamed session's mail
+follows it automatically.
+
+**Announce:** `lab note "<thing>"` — append-only log. NOT a to-do list.
+
+**Tasks:** `lab task` (outstanding) · `lab task list --open` (free to take)
+```
+lab task add --title "<clear title>" --desc "<detailed guidance>" [--tag <agent>]
+lab task take <id>            # claim; fails if already taken
+lab task done <id> --note "…" # or: fail <id> --note "<why>"
+```
+`--tag` is a suggestion ("see if you can help"), never a reservation — tagged tasks stay open
+to anyone. The creator is notified on take/done/fail.
+
+**Datasets:** before acquiring anything, `lab data check <accession>` / `lab data find <keywords>`.
+The moment a download/processing step finishes, `lab data add`/`update` it — a dataset is not
+"done" until `--verified --verified-how "<what you checked>"`. Never scan the filesystem to find
+data; the registry is the index.
+
+**Meetings:** when you get a "post your update" message, `lab meeting post --file <update.md>`
+with real results (numbers, tables, figure paths), blockers and next steps.
