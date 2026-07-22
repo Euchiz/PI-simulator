@@ -4,7 +4,7 @@
 > BioProject legitimately spans many datasets). Added a free-text **`subset`** column (which slice).
 > `add` **blocks on duplicate `id` only**; a repeated accession **warns + lists siblings** but is allowed.
 > `check <accession>` now returns **all** slices under that accession. Register each slice with the real
-> accession + `--subset`; never invent sub-accessions (e.g. `GSE12345:partB`). Existing split rows migrated back.
+> accession + `--subset`; never invent sub-accessions (e.g. `ACC12345:partB`). Existing split rows migrated back.
 
 
 journal). Dispatched as `lab data …`. DB `~/lab/datasets.db` (empty at build). Daily maintenance
@@ -22,7 +22,7 @@ anything tomorrow.
 1. **General, not nanopore-specific.** No hardcoded chemistry column; chemistry lives in free-text tags.
 2. **Status = a free-text line the agent writes** so others can just read and understand it — no rigid
    enum. Plus **`updated_by`** = the responsible agent/person to reach out to on confusion.
-3. **Keywords = free-text tags** (`RNA002`, `RNA004`, `Illumina`, `in-vivo`, `m6A`, `GT`, …),
+3. **Keywords = free-text tags** (`illumina`, `nanopore`, `in-vivo`, `timecourse`, `ground-truth`, …),
    **queryable across rows** (FTS handles this).
 4. **Duplicate id/accession → BLOCK** with a clear error: *"id 'X' already exists — consider
    `lab data update X`."*
@@ -37,13 +37,13 @@ anything tomorrow.
 
 ```sql
 CREATE TABLE datasets (
-  id            TEXT PRIMARY KEY,     -- short slug, e.g. swarm-rna004  (dup -> BLOCK)
+  id            TEXT PRIMARY KEY,     -- short slug, e.g. study-a-2024   (dup -> BLOCK)
   study_name    TEXT NOT NULL,        -- human study/paper name
   accession     TEXT,                 -- SRA/ENA/GEO/PRJNA...  (UNIQUE; dup -> BLOCK)
   paper_url     TEXT,
   location      TEXT NOT NULL,        -- absolute storage path
   tags          TEXT,                 -- free-text keywords; queryable across rows
-                                      --   e.g. "RNA002 DRS SHAPE riboswitch in-vivo"
+                                      --   e.g. "nanopore in-vivo timecourse"
   samples       TEXT,                 -- free-text: what samples are in it, at a glance
                                       --   e.g. "treated x2 + matched control x2 + unmod spike-in"
   status_line   TEXT NOT NULL,        -- the agent's own plain-language current status. Read it,
@@ -81,7 +81,7 @@ strongly recommended (they carry the at-a-glance value). Everything else optiona
 Reads/queries are **live** against the DB (always current, fast at any size — indexed + FTS):
 - `lab data check <accession|query>` — **dedup gate.** Match → print row + location, exit non-zero.
 - `lab data find <query>` — FTS across id/name/accession/tags/samples/status/usage/notes.
-- `lab data show <id>` · `lab data list [--tag RNA004 --status …]`
+- `lab data show <id>` · `lab data list [--tag nanopore --status …]`
 
 Writes are DB-only (flock-guarded, one transaction — **constant time regardless of table size**):
 - `lab data add --id … --study … --location … --status "…" --usage "…" [--tags … --samples … --accession … …]`

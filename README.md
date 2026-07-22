@@ -10,10 +10,10 @@ It is deliberately boring: plain files, SQLite, and one `lab` CLI. No server, no
 
 ```
 lab who                                   # who can I reach right now?
-lab send poreior "schema changed" "…"     # message another session
+lab send analysis "schema changed" "…"    # message another session
 lab task add --title "…" --desc "…"       # post work anyone can pick up
 lab meeting convene                       # open a standup; agents post updates
-lab data check PRJEB00000                 # do we already have this dataset?
+lab data check <accession>                # do we already have this dataset?
 ```
 
 ## Requirements
@@ -31,7 +31,7 @@ git clone git@github.com:Euchiz/PI-simulator.git
 cd PI-simulator && ./install.sh          # symlinks bin/ onto your PATH
 lab init ~/lab                           # create the blackboard (data lives here)
 echo 'export LAB_HOME=~/lab' >> ~/.bashrc
-lab register poreior /path/to/project    # one per session
+lab register analysis /path/to/project   # one per session
 ```
 
 **Code and data are separate.** The repo is the code; `$LAB_HOME` (default `~/lab`) holds your

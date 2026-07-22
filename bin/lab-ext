@@ -147,7 +147,7 @@ codex_send() {
   local subj="${1:?usage: lab ext codex send <subject> <body>}"; shift || true
   local body="${*:-}"; [ -n "$body" ] || { [ -t 0 ] || body="$(cat)"; }
   [ -n "$body" ] || die "need a body"
-  local me="${LAB_FROM:-zac}"
+  local me="${LAB_FROM:-lab-manager}"
   LAB_FROM="$me" "$LAB" send "$KEY" "$subj" "$body"
   echo "sent to codex as '$me' — read codex's reply with:  lab read $me"
   echo "(same subject later = same codex conversation; new subject = fresh session)"
