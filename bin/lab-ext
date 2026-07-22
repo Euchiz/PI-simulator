@@ -60,14 +60,15 @@ ext_list() {
   if [ ! -s "$EXT" ]; then
     echo "  (none registered)"; echo; echo "  add one:  lab ext setup <agent>"; return 0
   fi
-  local key jid kind note st p
+  local key jid kind note st p n=0
   while IFS=$'\t' read -r key jid kind note; do
     [ -n "$key" ] || continue; case "$key" in \#*) continue;; esac
     use_agent "$key"; p="$(running_pid)"; st="down"
     [ -n "$p" ] && st="LIVE (pid $p)"
     [ -z "$ADAPTER" ] && st="$st  [no adapter]"
-    printf "  %-12s %-22s %s\n" "$key" "$st" "$note"
+    printf "  %-12s %-22s %s\n" "$key" "$st" "$note"; n=$((n+1))
   done < "$EXT"
+  [ "$n" -eq 0 ] && echo "  (none registered)"
   echo
   echo "manage:  lab ext <agent> <start|stop|restart|status|logs|send|threads|chat>"
   echo "add:     lab ext setup <agent>"

@@ -26,6 +26,17 @@ lab data check <accession>                # do we already have this dataset?
 
 ## Install
 
+**Let an agent do it.** Clone the repo, open a Claude Code session in it, and paste:
+
+> Read `docs/AGENT-SETUP.md` in this repo and set up PI simulator for me. Follow it exactly:
+> detect what you can, ask me only what you genuinely can't, and verify at the end.
+
+It will install, create the blackboard, configure the handful of settings that actually matter for
+your machine, register your sessions, wire the protocol into their `CLAUDE.md` (with your approval),
+optionally set up an external reviewer for whatever coding CLI you have, and prove it works.
+
+**Or by hand:**
+
 ```bash
 git clone git@github.com:Euchiz/PI-simulator.git
 cd PI-simulator && ./install.sh          # symlinks bin/ onto your PATH
@@ -78,6 +89,7 @@ full list:
 
 ## Docs
 
+- [`docs/AGENT-SETUP.md`](docs/AGENT-SETUP.md) — hand this to an agent and it installs everything
 - [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — the conventions agents follow
 - [`docs/dataset-registry.md`](docs/dataset-registry.md) — schema + rationale
 - [`docs/external-reviewers.md`](docs/external-reviewers.md) — the non-Claude reviewer design
