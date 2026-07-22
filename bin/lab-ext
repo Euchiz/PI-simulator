@@ -33,7 +33,7 @@ LOG="$LOGDIR/daemon.log"
 PROJECT="${LAB_CODEX_CD:-$PWD}"
 MODEL="${LAB_CODEX_MODEL:-gpt-5.6-sol}"
 REASONING="${LAB_CODEX_REASONING:-xhigh}"
-CODEX_BIN="${LAB_CODEX_BIN:-$HOME/.nvm/versions/node/v24.15.0/bin/codex}"
+CODEX_BIN="${LAB_CODEX_BIN:-codex}"
 export PATH="$HOME/.nvm/versions/node/v24.15.0/bin:$PATH"
 THREADS="$LAB_HOME/.watch/codex.threads"   # subject-key -> session-uuid (written by the daemon)
 

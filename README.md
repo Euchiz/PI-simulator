@@ -37,8 +37,11 @@ lab register analysis /path/to/project   # one per session
 **Code and data are separate.** The repo is the code; `$LAB_HOME` (default `~/lab`) holds your
 blackboard — inboxes, meetings, tasks, registry. Nothing in this repo writes research content.
 
-**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically). The repo
-ships generic defaults; your deployment sets reality — see [`examples/lab.env.example`](examples/lab.env.example):
+**Per-install settings** go in `$LAB_HOME/lab.env` (gitignored, sourced automatically).
+**`lab init` writes it for you**, with every option commented at its default — so the knobs are
+discoverable instead of buried in the source. Nothing needs editing to start; re-running `lab init`
+never overwrites your settings. See [`examples/lab.env.example`](examples/lab.env.example) for the
+full list:
 
 - **health-check thresholds** — what counts as a stalled session, an unread backlog, a stale task
 - **the daily judgement pass** — pick the model, point `LAB_JUDGE_CMD` at any prompt-in/text-out CLI,

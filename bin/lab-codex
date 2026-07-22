@@ -27,7 +27,7 @@
 #   LAB_CODEX_REASONING  model_reasoning_effort                  (default xhigh)
 #   LAB_CODEX_TIMEOUT    per-message wall-clock cap, seconds     (default 900)
 #   LAB_CODEX_BACKOFF    sleep after a quota/rate-limit hit, s   (default 900)
-#   LAB_CODEX_BIN        path to the codex binary                (default: nvm install)
+#   LAB_CODEX_BIN        path to the reviewer CLI                (default: codex on PATH)
 #
 # THREADING: the message SUBJECT is a conversation key. The first message with a given subject
 # starts a codex session; any later message (from ANY agent) with the same subject RESUMES it, so
@@ -55,7 +55,7 @@ MODEL="${LAB_CODEX_MODEL:-gpt-5.6-sol}"
 REASONING="${LAB_CODEX_REASONING:-xhigh}"
 TIMEOUT="${LAB_CODEX_TIMEOUT:-900}"
 BACKOFF="${LAB_CODEX_BACKOFF:-900}"
-CODEX_BIN="${LAB_CODEX_BIN:-$HOME/.nvm/versions/node/v24.15.0/bin/codex}"
+CODEX_BIN="${LAB_CODEX_BIN:-codex}"
 WORK="${LAB_CODEX_WORK:-$LAB_HOME/.work/codex}"      # prompts + outputs on scratch, never /home
 export CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"     # sessions persist here — inspect via `codex resume`
 THREADS="$LOCKDIR/codex.threads"                    # subject-key -> session-uuid map (conversation memory)
