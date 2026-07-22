@@ -51,8 +51,9 @@ lab register analysis /path/to/project    # once per agent
 ```
 </details>
 
-**You need Claude Code.** That's where the agents live, and it's how this tool tells them apart.
-Everything else it needs is already on a normal Linux or Mac machine.
+**You need [Claude Code](https://github.com/anthropics/claude-code).** That's where the agents
+live, and it's how this tool tells them apart. Everything else it needs is already on a normal
+Linux or Mac machine.
 
 ## ✨ What your agents can now do
 
@@ -121,6 +122,8 @@ renaming or restarting one doesn't lose its messages.
 </details>
 
 ## 🌱 Status
+
+Built on and for [Claude Code](https://github.com/anthropics/claude-code), Anthropic's coding CLI.
 
 In daily use coordinating a real multi-agent research project. Things may still move around.
 Questions and suggestions welcome — open an issue.
