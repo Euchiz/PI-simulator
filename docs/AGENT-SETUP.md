@@ -163,7 +163,10 @@ bash -n "$LAB_HOME/lab.env" && echo "config ok"
 Then tell the user, in plain language:
 
 - **where the blackboard is**, and that it's data — back it up, don't commit it
-- **the four commands they'll actually use**: `lab who`, `lab task`, `lab send`, `lab data check`
+- **how they'll actually use it:** they stay in Claude Code's multi-session view and ask their
+  agents in plain English — the agents run the `lab` commands themselves, silently. The human
+  rarely types any. If they ever want to look by hand, `lab who` (who's around) and `lab task`
+  (the task list) are the handy read-only ones.
 - **what you configured and why**, especially anything you changed from a default
 - **what you did NOT set up**, and how to add it later
 - if you edited any project file, **exactly which ones**

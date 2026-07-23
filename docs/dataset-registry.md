@@ -1,16 +1,17 @@
-# Lab dataset registry — BUILT (2026-07-17)
+# Lab dataset registry
 
-> **Update 2026-07-17 — super-families.** `accession` is **NO LONGER unique** (a GEO SuperSeries /
-> BioProject legitimately spans many datasets). Added a free-text **`subset`** column (which slice).
-> `add` **blocks on duplicate `id` only**; a repeated accession **warns + lists siblings** but is allowed.
-> `check <accession>` now returns **all** slices under that accession. Register each slice with the real
-> accession + `--subset`; never invent sub-accessions (e.g. `ACC12345:partB`). Existing split rows migrated back.
+A single index of every dataset the lab has downloaded or processed, exposed as `lab data …`. It's a
+small SQLite database (`~/lab/datasets.db`) that stores pointers and metadata — never the data itself.
+Queries run live against the DB (indexed + full-text, fast at any size); the browsable `DATASETS.md`
+snapshot and the git-tracked `datasets.csv` backup regenerate on a daily cron and on demand, never on
+the write path (see Performance).
 
-
-journal). Dispatched as `lab data …`. DB `~/lab/datasets.db` (empty at build). Daily maintenance
-`~/lab/bin/lab-data-maint` on cron `15 8 * * *` (render+export+audit). CLAUDE.md rules added to both
-shared project dirs. Accession duplicates **BLOCK** (the human's call). `DATASETS.md` = human snapshot only,
-NOT a query source (query live via `lab data find/list/show`). DB stores pointers + metadata, never data.
+**One accession can cover many datasets.** A GEO SuperSeries or BioProject legitimately spans several
+sub-datasets, so `accession` is **not unique**: `add` blocks only on a duplicate `id`, while a repeated
+accession is allowed — it warns and lists the sibling rows already under it. A free-text `subset` column
+says which slice a row covers, and `check <accession>` returns *every* slice under that accession.
+Register each slice under the real accession plus `--subset`; never invent sub-accessions like
+`ACC12345:partB`.
 
 ## Goal
 One authoritative index of every dataset the lab has downloaded or processed, so agents can
@@ -18,14 +19,15 @@ One authoritative index of every dataset the lab has downloaded or processed, so
 finish** (nothing is "done" until it's in here, verified). Pipeline-agnostic — nanopore today,
 anything tomorrow.
 
-## Decisions (from the human)
+## Design decisions
 1. **General, not nanopore-specific.** No hardcoded chemistry column; chemistry lives in free-text tags.
 2. **Status = a free-text line the agent writes** so others can just read and understand it — no rigid
    enum. Plus **`updated_by`** = the responsible agent/person to reach out to on confusion.
 3. **Keywords = free-text tags** (`illumina`, `nanopore`, `in-vivo`, `timecourse`, `ground-truth`, …),
    **queryable across rows** (FTS handles this).
-4. **Duplicate id/accession → BLOCK** with a clear error: *"id 'X' already exists — consider
-   `lab data update X`."*
+4. **Duplicate `id` → BLOCK** with a clear error: *"id 'X' already exists — consider
+   `lab data update X`."* A repeated **accession is allowed** (warns + lists siblings), because one
+   super-family legitimately spans many datasets.
 5. **Scope = everything** (raw datasets, GT tables, benchmark bundles, embeddings, …) as long as the
    spec + usage description is clear → required `usage` field.
 6. **`samples` = free-text sample clarification** — what's in it at a glance (treated vs control, with/
@@ -39,7 +41,8 @@ anything tomorrow.
 CREATE TABLE datasets (
   id            TEXT PRIMARY KEY,     -- short slug, e.g. study-a-2024   (dup -> BLOCK)
   study_name    TEXT NOT NULL,        -- human study/paper name
-  accession     TEXT,                 -- SRA/ENA/GEO/PRJNA...  (UNIQUE; dup -> BLOCK)
+  accession     TEXT,                 -- SRA/ENA/GEO/PRJNA...  (NOT unique; a super-family spans many)
+  subset        TEXT,                 -- which slice of a super-family this row covers (free text)
   paper_url     TEXT,
   location      TEXT NOT NULL,        -- absolute storage path
   tags          TEXT,                 -- free-text keywords; queryable across rows
@@ -66,10 +69,10 @@ CREATE TABLE datasets (
   created       TEXT NOT NULL,
   updated       TEXT NOT NULL
 );
-CREATE UNIQUE INDEX ux_accession ON datasets(accession) WHERE accession IS NOT NULL;
+CREATE INDEX ix_accession ON datasets(accession);   -- NOT unique: one super-family spans many rows
 
 CREATE VIRTUAL TABLE datasets_fts USING fts5(
-  id, study_name, accession, tags, samples, status_line, usage, notes,
+  id, study_name, accession, subset, tags, samples, status_line, usage, notes,
   content='datasets', content_rowid='rowid'
 );  -- + insert/update/delete triggers to keep it in sync
 ```
