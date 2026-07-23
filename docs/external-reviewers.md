@@ -79,8 +79,8 @@ so its lifecycle is yours to own. `lab ext` wraps it (examples use `codex`):
     lab ext codex chat          # interactive session, if the adapter defines adapter_chat
 
 ### Durability (survives crashes + reboots)
-`~/lab/bin/lab-ext-keepalive` (idempotent — starts an agent only if it isn't already up) is wired into
-cron:
+`lab ext keepalive` (idempotent — starts an agent only if it isn't already up) is wired into cron
+(the logic lives in `lab-ext`; there is no separate keepalive script):
 - `@reboot` (after a 60s settle for mounts) brings it back after a node reboot;
 - `*/5 * * * *` restarts it within 5 min if it ever dies.
 

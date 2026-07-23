@@ -267,6 +267,17 @@ def cmd_audit(a):
     for r in unver:   print(f"  unverif  {r['id']:<22} (contact {r['updated_by']})")
     sys.exit(2 if missing else 0)
 
+def cmd_maint(a):
+    import datetime
+    print(f"=== lab data maint {datetime.datetime.now():%F %T} ===")
+    cmd_render(a)
+    cmd_export(a)
+    try:
+        cmd_audit(a)          # audit exits 2 when paths are missing — a report, not a failure
+    except SystemExit as e:
+        if e.code not in (0, 2):
+            raise
+
 def build_parser():
     p=argparse.ArgumentParser(prog="lab data"); sub=p.add_subparsers(dest="cmd", required=True)
     def add_common_write(sp):
@@ -287,6 +298,7 @@ def build_parser():
     s=sub.add_parser("render");s.set_defaults(fn=cmd_render)
     s=sub.add_parser("export");s.set_defaults(fn=cmd_export)
     s=sub.add_parser("audit"); s.set_defaults(fn=cmd_audit)
+    s=sub.add_parser("maint"); s.set_defaults(fn=cmd_maint)
     return p
 
 if __name__=="__main__":

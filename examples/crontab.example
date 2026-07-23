@@ -5,10 +5,10 @@
 7 8 * * *  LAB_HOME=$HOME/lab lab-daily >> $HOME/lab/alerts/.cron.log 2>&1
 
 # Dataset registry maintenance: human snapshot + CSV backup + dead-path audit
-15 8 * * * LAB_HOME=$HOME/lab lab-data-maint >> $HOME/lab/.datasets-maint.log 2>&1
+15 8 * * * LAB_HOME=$HOME/lab lab data maint >> $HOME/lab/.datasets-maint.log 2>&1
 
 # Auto-convene meetings (here Mon 3pm + Thu 10pm) and a between-meeting check-in
 # (here Tue 10am) — use whatever days suit your lab; the day lives in the schedule, not the name
 0 15 * * 1 LAB_FROM=lab-manager LAB_HOME=$HOME/lab lab meeting convene >> $HOME/lab/meeting/.cron.log 2>&1
 0 22 * * 4 LAB_FROM=lab-manager LAB_HOME=$HOME/lab lab meeting convene >> $HOME/lab/meeting/.cron.log 2>&1
-0 10 * * 2 LAB_HOME=$HOME/lab lab-checkin >> $HOME/lab/meeting/.cron.log 2>&1
+0 10 * * 2 LAB_FROM=lab-manager LAB_HOME=$HOME/lab lab meeting checkin >> $HOME/lab/meeting/.cron.log 2>&1

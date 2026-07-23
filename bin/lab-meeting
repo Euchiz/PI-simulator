@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+# lab-meeting — standup rooms kept by date, plus the between-meeting check-in.
+# Part of the `lab` family; normally reached as `lab meeting …` (and `lab meeting checkin`).
+# Keyed by date + optional label (e.g. 2026-06-24, 2026-06-24-results), so you can
+# hold several per week. One meeting is "active" at a time; posts land in it.
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lab-common.sh"
+
+meet_active() { [ -f "$ACTIVE" ] && cat "$ACTIVE" 2>/dev/null || true; }
+meet_latest() { local d last=""; for d in "$MEET"/*/; do [ -d "$d" ] || continue; last="$(basename "$d")"; done; echo "$last"; }
+meet_resolve() {
+  local a="${1:-}"
+  if [ -n "$a" ]; then
+    if [ -d "$MEET/$a" ]; then echo "$a"; return; fi
+    local d hit=""                                   # fuzzy: match by label substring, newest wins
+    for d in "$MEET"/*/; do [ -d "$d" ] || continue; case "$(basename "$d")" in *"$a"*) hit="$(basename "$d")";; esac; done
+    echo "${hit:-$a}"; return
+  fi
+  local x; x="$(meet_active)"; [ -n "$x" ] && { echo "$x"; return; }
+  meet_latest
+}
+
+meeting_convene() {
+  ensure_init
+  local label="${1:-}"
+  local base; base="$(date +%Y-%m-%d)"; [ -n "$label" ] && base="$base-$(pkey "$label")"
+  local id="$base" n=2
+  while [ -d "$MEET/$id" ]; do id="$base-$n"; n=$((n+1)); done   # unique even for several/day
+  local dir="$MEET/$id"; mkdir -p "$dir/posts" "$dir/assets"
+  # Agenda wording is yours: drop a $LAB_HOME/templates/meeting-agenda.md to override
+  # the built-in text. $id is substituted; everything else is copied verbatim.
+  if [ -f "$LAB_HOME/templates/meeting-agenda.md" ]; then
+    sed "s/{{id}}/$id/g" "$LAB_HOME/templates/meeting-agenda.md" > "$dir/AGENDA.md"
+  else
+  cat > "$dir/AGENDA.md" <<EOF
+# Lab meeting — $id
+Convened: $(ts)
+
+Post a full lab-meeting update — share the real thing, as long as it needs to be:
+  - what you worked on and the KEY RESULTS: numbers, tables, comparisons
+  - figures/plots — embed by absolute path, e.g.  ![desc](/abs/path/plot.png)
+    or drop images into this folder's  assets/  and reference them
+  - blockers, open questions, and next steps
+
+Post it (use --file for a longer doc with tables/figures):
+  ~/lab/bin/lab meeting post "<markdown update>"
+  ~/lab/bin/lab meeting post --file my_update.md
+Then attend — read everyone else's:
+  ~/lab/bin/lab meeting read
+EOF
+  fi
+  echo "$id" > "$ACTIVE"
+  local sent=0
+  while read -r key; do
+    [ -n "$key" ] || continue
+    "$SELF/lab-msg" send --force "$key" "lab meeting $id — post your update" \
+"Lab meeting '$id' is open. Post a FULL update — key results (numbers, tables),
+figures (embed by absolute path or drop in $dir/assets/), blockers, and next
+steps. As long as it needs to be; this is a lab meeting, not a status line.
+  ~/lab/bin/lab meeting post \"<markdown>\"       # short
+  ~/lab/bin/lab meeting post --file update.md      # longer doc with figures/tables
+Then see everyone else's:  ~/lab/bin/lab meeting read" >/dev/null
+    sent=$((sent+1))
+  done < <(grep '^- \*\*' "$REG" 2>/dev/null | sed -E 's/^- \*\*([^*]+)\*\*.*/\1/')
+  echo "lab: meeting '$id' convened (now active) — agenda at $dir/AGENDA.md, requested $sent sessions"
+}
+
+meeting_compile() {
+  local id; id="$(meet_resolve "${1:-}")"; local dir="$MEET/$id"
+  [ -n "$id" ] && [ -d "$dir" ] || die "no meeting to compile (convene one first)"
+  local out="$dir/MEETING.md"; local n
+  n="$(find "$dir/posts" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)"
+  {
+    echo "# Lab meeting record — $id"
+    echo "_Compiled $(ts) · $n posts_"
+    echo
+    [ -f "$dir/AGENDA.md" ] && { echo "## Agenda"; echo; cat "$dir/AGENDA.md"; echo; }
+    echo "## Posts"
+    echo
+    for f in "$dir"/posts/*.md; do
+      [ -e "$f" ] || continue
+      local name src posted tag
+      name="$(basename "$f" .md)"
+      src="$(sed -n 's/^source: //p' "$f" | head -1)"
+      posted="$(sed -n 's/^posted: //p' "$f" | head -1)"
+      tag=""; [ "${src:-self}" != "self" ] && tag=" _(${src})_"
+      echo "### ${name}${tag}"
+      [ -n "$posted" ] && echo "_posted: ${posted}_"
+      echo
+      sed '1,/^---$/d; /^---$/d' "$f" 2>/dev/null | sed '/./,$!d'
+      echo
+    done
+  } > "$out"
+  local idx="$MEET/INDEX.md"
+  [ -f "$idx" ] || echo "# Lab meeting records (by date)" > "$idx"
+  grep -q "meeting/$id/MEETING.md" "$idx" 2>/dev/null \
+    || echo "- **$id** — compiled $(date +%Y-%m-%d), $n posts — [record](meeting/$id/MEETING.md)" >> "$idx"
+  echo "lab: compiled record -> $out  (indexed in $idx)"
+}
+
+meeting_post() {
+  ensure_init
+  local as="" source="self" file=""
+  while true; do
+    case "${1:-}" in
+      --as)   as="$2"; source="auto-seed (transcript)"; shift 2;;
+      --file) file="$2"; shift 2;;
+      *) break;;
+    esac
+  done
+  local text
+  if [ -n "$file" ]; then [ -f "$file" ] || die "no such file: $file"; text="$(cat "$file")"
+  else text="$*"; [ -n "$text" ] || { [ -t 0 ] || text="$(cat)"; }; fi
+  [ -n "$text" ] || die "usage: lab meeting post [--as <key>] [--file <path>] <markdown>|<stdin>"
+  local self
+  if [ -n "$as" ]; then self="$(pkey "$as")"
+  else self="$(resolve_self || true)"; self="$(pkey "${self:-${LAB_FROM:-}}")"; fi
+  [ -n "$self" ] || die "could not resolve your session name (set LAB_FROM=<name>)"
+  local id; id="$(meet_active)"; [ -n "$id" ] || die "no active meeting — convene one: lab meeting convene"
+  mkdir -p "$MEET/$id/posts"
+  local f="$MEET/$id/posts/$self.md"
+  cat > "$f" <<EOF
+---
+session: $self
+meeting: $id
+posted: $(ts)
+source: $source
+---
+
+$text
+EOF
+  echo "lab: posted to meeting '$id' as '$self' (source: $source)"
+}
+
+meeting_read() {
+  local id; id="$(meet_resolve "${1:-}")"; local dir="$MEET/$id"
+  [ -n "$id" ] && [ -d "$dir" ] || { echo "[no meeting — convene with: lab meeting convene]"; return 0; }
+  [ -f "$dir/AGENDA.md" ] && cat "$dir/AGENDA.md"
+  echo; echo "════════ posts ════════"
+  local any=0
+  for f in "$dir"/posts/*.md; do
+    [ -e "$f" ] || continue; any=1
+    local src; src="$(sed -n 's/^source: //p' "$f" | head -1)"
+    local tag=""; [ "${src:-self}" != "self" ] && tag="  [${src}]"
+    echo "── $(basename "$f" .md)$tag ──"
+    sed '1,/^---$/d; /^---$/d' "$f" 2>/dev/null | sed '/./,$!d'
+    echo
+  done
+  [ "$any" = 1 ] || echo "(no posts yet)"
+}
+
+meeting_status() {
+  local id; id="$(meet_resolve "${1:-}")"; local dir="$MEET/$id"
+  [ -n "$id" ] || { echo "(no meetings yet — convene one)"; return 0; }
+  echo "Meeting '$id' — attendance:"
+  while read -r key; do
+    [ -n "$key" ] || continue
+    if [ -f "$dir/posts/$key.md" ]; then echo "  [x] $key (posted)"; else echo "  [ ] $key (pending)"; fi
+  done < <(grep '^- \*\*' "$REG" 2>/dev/null | sed -E 's/^- \*\*([^*]+)\*\*.*/\1/')
+}
+
+meeting_list() {
+  local act; act="$(meet_active)"; local d id n any=0
+  echo "Meetings (* = active):"
+  for d in "$MEET"/*/; do
+    [ -d "$d" ] || continue; any=1
+    id="$(basename "$d")"
+    n="$(find "$d/posts" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)"
+    local mark="  "; [ "$id" = "$act" ] && mark=" *"
+    local comp=""; [ -f "$d/MEETING.md" ] && comp=" — compiled"
+    echo "$mark $id — $n posts$comp"
+  done
+  [ "$any" = 1 ] || echo "  (none yet)"
+}
+
+# Between-meeting check-in — NOT a meeting. Asks every session for an incremental
+# update since the last meeting, sent to the lab manager. The last meeting record is
+# the base; these updates amend it, so no second full meeting is convened.
+# Schedule it on whatever day suits your lab — the day lives in your crontab, not here.
+meeting_checkin() {
+  export LAB_FROM=lab-manager
+  export PATH="$SELF:/usr/local/bin:/usr/bin:/bin"
+  local body
+  # Wording is yours: $LAB_HOME/templates/checkin.md overrides the default below.
+  if [ -f "$LAB_HOME/templates/checkin.md" ]; then
+    body="$(cat "$LAB_HOME/templates/checkin.md")"
+  else
+read -r -d '' body <<'EOF' || true
+Check-in — there is NO meeting in this slot.
+
+If you have NEW results or changes since your last meeting post, send them
+straight to the lab manager (short is fine — just what's new, not a full update):
+
+  ~/lab/bin/lab send lab-manager "<short subject>" "<what changed since the last meeting>"
+
+If nothing has changed, do nothing — no reply needed.
+
+These updates amend the last meeting's record; they are not a new meeting. Anything
+you send will be folded into the same week's report/slides.
+EOF
+  fi
+  exec "$SELF/lab-msg" broadcast "Check-in — anything new since the last meeting?" "$body"
+}
+
+sub="${1:-read}"; shift || true
+case "$sub" in
+  convene)         meeting_convene "$@";;
+  post)            meeting_post "$@";;
+  read|attend)     meeting_read "$@";;
+  status)          meeting_status "$@";;
+  compile|archive) meeting_compile "$@";;
+  list|ls)         meeting_list "$@";;
+  close)           rm -f "$ACTIVE"; echo "lab: active meeting closed (records kept)";;
+  room)            echo "$MEET/$(meet_resolve "${1:-}")";;
+  checkin)         meeting_checkin "$@";;
+  -h|--help|help)  exec bash "$SELF/lab" help meetings;;
+  *) die "lab meeting: convene [label] | post [--file f] <md> | read [id] | status [id] | compile [id] | list | close | checkin";;
+esac

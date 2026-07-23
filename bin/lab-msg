@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# lab-msg — messaging between sessions: send · broadcast · inbox · read · watch.
+# Part of the `lab` family; normally reached as `lab send`, `lab read`, etc.
+set -euo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lab-common.sh"
+
+cmd_send() {
+  ensure_init
+  local force=0
+  if [ "${1:-}" = "--force" ]; then force=1; shift; fi
+  local to_raw="${1:?usage: lab send [--force] <to|@job-id> <subject> [body]}"; local subj="${2:?need subject}"; shift 2 || true
+  local body="${*:-}"; [ -n "$body" ] || { [ -t 0 ] || body="$(cat)"; }
+  # validate the recipient against the active messenger list (unless --force)
+  local to
+  if [ "$force" = 1 ]; then
+    to="$(pkey "${to_raw#@}")"
+  else
+    to="$(python3 "$SELF/lab-roster" resolve "$to_raw")" \
+      || { echo "lab send: recipient not sent to. Pick a current target above, or use \`lab who\`, \`@<job-id>\`, or --force." >&2; return 1; }
+  fi
+  local from; from="$(resolve_self || true)"; from="$(pkey "${from:-${LAB_FROM:-$(project_for_dir || echo unknown)}}")"
+  mkdir -p "$INBOX/$to"
+  [ -d "$INBOX/$to" ] || die "no inbox for '$to' — register it first"
+  local f="$INBOX/$to/$(stamp)__from-$(slug "$from")__$(slug "$subj").md"
+  cat > "$f" <<EOF
+---
+from: $from
+to: $to
+date: $(ts)
+subject: $subj
+status: unread
+---
+
+$body
+EOF
+  echo "lab: message -> $to  ($(basename "$f"))"
+}
+
+cmd_broadcast() {
+  ensure_init
+  local subj="${1:?usage: lab broadcast <subject> <body>}"; shift || true
+  local body="${*:-}"; [ -n "$body" ] || { [ -t 0 ] || body="$(cat)"; }
+  [ -n "$body" ] || die "usage: lab broadcast <subject> <body>|<stdin>"
+  local sent=0
+  while read -r key; do
+    [ -n "$key" ] || continue
+    cmd_send --force "$key" "$subj" "$body" >/dev/null   # fan-out: reach every registered inbox
+    sent=$((sent+1))
+  done < <(grep '^- \*\*' "$REG" 2>/dev/null | sed -E 's/^- \*\*([^*]+)\*\*.*/\1/')
+  echo "lab: broadcast to $sent sessions — \"$subj\""
+}
+
+cmd_inbox() {
+  ensure_init
+  if [ -n "${1:-}" ]; then
+    local n; n="$(pkey "$1")"; local c; c=$(find "$INBOX/$n" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)
+    echo "$n: $c unread"
+  else
+    for d in "$INBOX"/*/; do
+      [ -d "$d" ] || continue; local n; n=$(basename "$d")
+      local c; c=$(find "$d" -maxdepth 1 -name '*.md' 2>/dev/null | wc -l)
+      [ "$c" -gt 0 ] && echo "$n: $c unread"
+    done
+  fi
+}
+
+cmd_read() {
+  ensure_init
+  reconcile_self   # if this session was renamed, its mail follows it before we read
+  local n; n="$(pkey "${1:-$(resolve_self)}")"; [ -n "$n" ] || die "usage: lab read <project>"
+  local any=0
+  mkdir -p "$INBOX/$n/.read"   # ad-hoc inboxes (e.g. codex replies to an unregistered name) lack it
+  for f in "$INBOX/$n"/*.md; do
+    [ -e "$f" ] || continue; any=1
+    echo "════════════════════════════════════════"
+    cat "$f"
+    echo
+    mv "$f" "$INBOX/$n/.read/"
+  done
+  [ "$any" = 1 ] || echo "[$n] inbox empty"
+}
+
+# Emit one line describing a message file (stdout line = one Monitor event).
+watch_emit() {
+  local f="$1"; [ -f "$f" ] || return 0
+  local from subj
+  from="$(sed -n 's/^from: //p' "$f" | head -1)"
+  subj="$(sed -n 's/^subject: //p' "$f" | head -1)"
+  echo "NEW lab message — from ${from:-?}: ${subj:-(no subject)}  → run: ~/lab/bin/lab read"
+}
+
+# Long-lived watcher: prints one line per NEW inbox message, forever.
+# Designed to be armed via the Monitor tool (persistent) so each line becomes a
+# notification. Cheap by construction: `ls` on ONE tiny inbox dir, never a scan.
+# NOTE: ~/lab is NFS and inotify is unavailable/unreliable there -> poll.
+cmd_watch() {
+  ensure_init
+  reconcile_self   # pick up a rename before we start watching an inbox
+  local n; n="$(pkey "${1:-$(resolve_self || true)}")"
+  [ -n "$n" ] || die "usage: lab watch [project]  (or run inside a registered session)"
+  local dir="$INBOX/$n"; mkdir -p "$dir"
+  local interval="${LAB_WATCH_INTERVAL:-30}"
+
+  # --- single-watcher guard (idempotent, SESSION-AWARE) -----------------------
+  # SessionStart fires on resume/compact too, so an agent may arm the watcher
+  # several times in ONE session -> a duplicate exits harmlessly (ends its Monitor).
+  #
+  # But an agent's OLD session can leak a still-running watcher. That stale watcher
+  # must NOT block the live session (it would silently get no delivery, and would
+  # keep eating this inbox's mail). So the lock records "<pid> <session-id>":
+  #   same session + alive  -> genuine duplicate, exit
+  #   other session         -> superseded; TAKE OVER the lock and warn
+  #   dead pid              -> stale; take over
+  local lockdir="$LAB_HOME/.watch"; mkdir -p "$lockdir"
+  local lock="$lockdir/$n.lock" old_pid old_sid
+  local my_sid="${CLAUDE_CODE_SESSION_ID:-unknown}"
+  if [ -f "$lock" ]; then
+    read -r old_pid old_sid < "$lock" 2>/dev/null || true
+    if [ -n "${old_pid:-}" ] && [ "$old_pid" != "$$" ] && kill -0 "$old_pid" 2>/dev/null; then
+      if [ "${old_sid:-}" = "$my_sid" ]; then
+        echo "lab watch: already watching '$n' (pid $old_pid, this session) — duplicate exiting."
+        return 0
+      fi
+      echo "lab watch: taking over '$n' from a SUPERSEDED session (stale pid $old_pid, sid ${old_sid:-?}). That process is still running and should be killed: kill $old_pid"
+    fi
+  fi
+  printf '%s %s\n' "$$" "$my_sid" > "$lock"
+  trap 'rm -f "$lock" 2>/dev/null' EXIT INT TERM
+  # ---------------------------------------------------------------------------
+  local seen cur new f
+  seen="$( (cd "$dir" && ls -1 -- *.md 2>/dev/null) | sort || true )"
+  # announce anything already waiting, then stream new arrivals
+  while IFS= read -r f; do [ -n "$f" ] && watch_emit "$dir/$f"; done <<< "$seen"
+  while true; do
+    sleep "$interval"
+    cur="$( (cd "$dir" && ls -1 -- *.md 2>/dev/null) | sort || true )"
+    new="$(comm -13 <(printf '%s\n' "$seen") <(printf '%s\n' "$cur") 2>/dev/null || true)"
+    while IFS= read -r f; do [ -n "$f" ] && watch_emit "$dir/$f"; done <<< "$new"
+    seen="$cur"
+  done
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  send)           cmd_send "$@";;
+  broadcast)      cmd_broadcast "$@";;
+  inbox)          cmd_inbox "$@";;
+  read)           cmd_read "$@";;
+  watch)          cmd_watch "$@";;
+  -h|--help|help) exec bash "$SELF/lab" help messaging;;
+  *)              die "lab-msg: unknown '$cmd' (send|broadcast|inbox|read|watch)";;
+esac

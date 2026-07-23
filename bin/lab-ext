@@ -11,6 +11,7 @@
 #   lab ext <agent> send <subj> <body>   ask it; the SUBJECT is the thread key
 #   lab ext <agent> threads          list conversation threads (subject -> session -> last used)
 #   lab ext <agent> chat [args]      interactive session, if the adapter supports it
+#   lab ext keepalive [agent]        (re)start its daemon if it's down — idempotent, for cron
 #
 # Each agent needs an ADAPTER: a small shell file saying how to run that one CLI.
 # `lab ext setup <agent>` creates it from a template. The lab side — inbox, threading,
@@ -203,11 +204,26 @@ agent_chat() {
   PROJECT="${LAB_EXT_CD:-$PWD}" SESSION_ID="$sid" AGENT="$KEY" adapter_chat "$@"
 }
 
+# (re)start an external agent's daemon only if it is down — idempotent; cron-driven.
+# Folds in the old standalone keepalive (@reboot + every few minutes keeps it alive).
+ext_keepalive() {
+  local kagent="${1:-${LAB_EXT_AGENT:-codex}}"
+  export PATH="${LAB_NODE_BIN:+$LAB_NODE_BIN:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+  local klog="${LAB_CODEX_WORK:-$LAB_HOME/.work/$kagent}/keepalive.log"
+  mkdir -p "$(dirname "$klog")" 2>/dev/null || true
+  local out; out="$("$SELF/lab-ext" "$kagent" start 2>&1)" || true
+  case "$out" in
+    *"already running"*) : ;;
+    *) printf '%s  %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | tr '\n' ' ')" >> "$klog" 2>/dev/null || true ;;
+  esac
+}
+
 sub="${1:-list}"; shift || true
 case "$sub" in
   ""|list|ls)      ext_list;;
   -h|--help|help)  usage;;
   setup)           ext_setup "$@";;
+  keepalive)       ext_keepalive "$@";;
   *)
     use_agent "$sub"
     act="${1:-status}"; shift || true
