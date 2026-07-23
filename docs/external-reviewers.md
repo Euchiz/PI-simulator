@@ -5,13 +5,13 @@ The lab can include **external agents** — participants that are not Claude Cod
 independent, skeptical peer reviewer: any session can send it a question, a claim, or code, and a
 second opinion lands back in that session's inbox — a non-Claude set of eyes.
 
-> **Status — codex is the validated one; the rest are experimental.** The mechanism is generic: one
-> bridge daemon (`lab-bridge`) driven by a small per-tool **adapter**. **Codex is the single reference
-> adapter that is actually validated and in daily use.** The same contract is meant to support other
-> tools (Gemini CLI, Aider, opencode, …), but **those adapters are not yet validated — treat them as
-> experimental and expect to iterate.** Everything tool-specific below (invocation, sandbox flags,
-> `LAB_CODEX_*`) belongs to the codex adapter; the framework around it (`lab ext`, `lab-bridge`,
-> threading, delivery, retries) is identical for every tool.
+> **Status.** The mechanism is generic: one bridge daemon (`lab-bridge`) driven by a small per-tool
+> **adapter**. Two adapters ship and are validated in real use — **codex** (OpenAI Codex CLI) and
+> **agy** (Antigravity/Gemini CLI) — and they are deliberately different shapes: codex has a real
+> `read-only` sandbox and takes its prompt on stdin, while agy has no read-only switch and takes the
+> prompt as a flag value. A third tool (Aider, opencode, …) should fit the same contract, but expect
+> to iterate on its adapter. Everything tool-specific stays in the adapter; the framework around it
+> (`lab ext`, `lab-bridge`, threading, delivery, retries) is identical for every tool.
 
 ## How to reach it
 Any session sends a message like it would to any peer (here, the codex reviewer):
@@ -30,8 +30,23 @@ starts a fresh, independent review.
   `lab ext <agent> start`). Tool-agnostic: it holds the liveness lock, polls `~/lab/inbox/<agent>/`
   (one cheap `ls`, never a scan), threads by subject, enforces the per-request timeout, retries on
   transient errors, and posts the reply back to the sender. None of it knows which CLI it drives.
-- **Adapter — `$LAB_HOME/adapters/<agent>.sh`** (or a shipped one under `adapters/`). A few shell
-  functions that are the *only* tool-specific code:
+- **Package — `$LAB_HOME/ext/<agent>/`.** Everything about one external agent lives in its own
+  directory, so agents cannot collide or inherit each other's settings:
+
+  | file | what it is |
+  |---|---|
+  | `adapter.sh` | how to run this CLI (the only tool-specific code) |
+  | `agent.env` | **this agent's** settings — sourced after `lab.env`, so per-agent values win |
+  | `brief.md` | this agent's reviewer brief (optional) |
+  | `threads` | subject → session id (conversation memory) |
+  | `daemon.log` | its daemon log |
+  | `work/` | its scratch prompts/outputs — redirect with `LAB_EXT_WORK` in `agent.env` |
+
+  `lab ext` lists every installed package. The layout is defined once in `bin/lab-ext-common.sh`,
+  shared by the manager and the daemon so they cannot disagree. A pre-package install
+  (`adapters/<agent>.sh`, `.watch/<agent>.threads`) is migrated automatically on next start.
+
+- **The adapter's functions** — the *only* tool-specific code:
   - `adapter_run` — **required.** Run one request: read `$PROMPT_FILE`, write the reply to `$OUT_FILE`,
     noise to `$LOG_FILE`, inspect `$PROJECT` read-only.
   - `adapter_preflight` — optional. Verify the CLI exists / is authenticated.
@@ -84,12 +99,18 @@ so its lifecycle is yours to own. `lab ext` wraps it (examples use `codex`):
 - `@reboot` (after a 60s settle for mounts) brings it back after a node reboot;
 - `*/5 * * * *` restarts it within 5 min if it ever dies.
 
-It keys on `LAB_EXT_AGENT` (default `codex`). The single-instance lock records the pid, and the guards
-verify it is actually a `lab-bridge` process before assuming it's alive, so stale locks after a reboot
-are taken over cleanly. To disable, delete the two keepalive lines from `crontab -e`.
+With no argument it sweeps **every installed agent**, so a newly added reviewer is durable the moment
+it is set up — no crontab edit. (Pass an agent name to limit it to one.) The single-instance lock
+records the pid, and the guards verify it is actually a `lab-bridge` process before assuming it's
+alive, so stale locks after a reboot are taken over cleanly. To disable, delete the two keepalive
+lines from `crontab -e`.
 
 ## Configuration
-**Framework knobs** (`LAB_EXT_*`, the same for every tool):
+Set these in **`ext/<agent>/agent.env`** for one agent, or in `lab.env` as a default for all of them.
+Precedence is **command line > `agent.env` > `lab.env` > built-in default** (the scaffolded
+`agent.env` uses `: "${VAR:=value}"`, so a value passed on the command line still wins).
+
+**Framework knobs** (`LAB_EXT_*`):
 
 | var | default | meaning |
 |---|---|---|
@@ -131,13 +152,16 @@ The codex adapter's underlying invocation (built from those vars):
   allowance, not API billing. The bridge serializes to one call at a time and backs off on quota errors;
   if auth expires, run `codex login` and restart.
 
-## Adding another external reviewer (experimental)
-1. `lab ext setup <agent>` — scaffolds `$LAB_HOME/adapters/<agent>.sh` from the template and prints the
-   contract.
+## Adding another external reviewer
+1. `lab ext setup <agent>` — creates the package `$LAB_HOME/ext/<agent>/` with an `adapter.sh` from the
+   template and a commented `agent.env`, and prints the contract.
 2. Implement `adapter_run` (plus any optional functions you need) and delete the `ADAPTER_UNIMPLEMENTED`
    line. Put tool settings (model, binary, sandbox flags) in `lab.env`, quoted.
 3. `lab ext <agent> start`, then smoke-test: `lab ext <agent> send "test" "reply OK if you can read this"`.
 
-Keep any adapter **read-only** — the reviewer inspects code; it must not modify anything. Only the codex
-adapter has been exercised in practice, so a new tool's adapter should be considered experimental until
-you've watched it handle real traffic.
+Keep any adapter **read-only** — the reviewer inspects code; it must not modify anything. How you achieve
+that is tool-specific and worth checking rather than assuming: codex has a real `-s read-only` sandbox,
+whereas agy has none, so its adapter relies on headless mode auto-denying every tool permission and the
+reviewer therefore sees only what the message contains. Never reach for a tool's "skip all permissions"
+flag here — the senders are autonomous agents, so that combines a prompt-injection surface with write
+access.

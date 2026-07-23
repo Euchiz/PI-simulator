@@ -29,25 +29,15 @@ SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 LAB="$SELF/lab"
 EXT="$LAB_HOME/external.tsv"
 DAEMON="$SELF/lab-bridge"
+. "$SELF/lab-ext-common.sh"    # the per-agent package layout
 [ -n "${LAB_NODE_BIN:-}" ] && export PATH="$LAB_NODE_BIN:$PATH"
 
 die(){ echo "lab ext: $*" >&2; exit 1; }
 usage(){ awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0"; }
 thread_key(){ printf '%s' "$1" | sed -E 's/^([[:space:]]*[Rr][Ee]:[[:space:]]*)+//' | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' | cut -c1-80; }
 
-# --- per-agent paths (set once the agent name is known) ---
-use_agent() {
-  KEY="$1"
-  LOCK="$LAB_HOME/.watch/$KEY.lock"
-  INBOX="$LAB_HOME/inbox/$KEY"
-  LOGDIR="${LAB_EXT_WORK:-$LAB_HOME/.work/$KEY}"
-  LOG="$LOGDIR/daemon.log"
-  THREADS="$LAB_HOME/.watch/$KEY.threads"
-  ADAPTER=""
-  for c in "${LAB_EXT_ADAPTER:-}" "$LAB_HOME/adapters/$KEY.sh" "$SELF/../adapters/$KEY.sh"; do
-    [ -n "$c" ] && [ -f "$c" ] && { ADAPTER="$c"; break; }
-  done
-}
+# --- per-agent paths: one definition, shared with the daemon (lab-ext-common.sh) ---
+use_agent() { ext_paths "$1"; }
 threads_get(){ [ -f "$THREADS" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$THREADS" || true; }
 running_pid() {
   [ -f "$LOCK" ] || return 0
@@ -56,21 +46,37 @@ running_pid() {
   tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'lab-bridge' && echo "$p" || true
 }
 
+# Every agent that is INSTALLED (has a package) or REGISTERED (row in external.tsv).
+# Paths are computed inline here rather than via ext_paths(), so listing one agent never
+# leaves another agent's settings loaded in this shell.
+ext_agent_keys() {
+  { ext_list_agents; cut -f1 "$EXT" 2>/dev/null | grep -v '^#'; } | sed '/^$/d' | sort -u
+}
+
+ext_has_adapter() {
+  [ -f "$LAB_HOME/ext/$1/adapter.sh" ] || [ -f "$LAB_HOME/adapters/$1.sh" ] \
+    || [ -f "$SELF/../adapters/$1.sh" ]
+}
+
 ext_list() {
-  echo "External lab agents ($EXT):"
-  if [ ! -s "$EXT" ]; then
-    echo "  (none registered)"; echo; echo "  add one:  lab ext setup <agent>"; return 0
+  echo "External lab agents ($LAB_HOME/ext):"
+  local keys k p st note n=0
+  keys="$(ext_agent_keys)"
+  if [ -z "$keys" ]; then
+    echo "  (none installed)"; echo; echo "  add one:  lab ext setup <agent>"; return 0
   fi
-  local key jid kind note st p n=0
-  while IFS=$'\t' read -r key jid kind note; do
-    [ -n "$key" ] || continue; case "$key" in \#*) continue;; esac
-    use_agent "$key"; p="$(running_pid)"; st="down"
+  while read -r k; do
+    [ -n "$k" ] || continue
+    LOCK="$LAB_HOME/.watch/$k.lock"; p="$(running_pid)"; st="down"
     [ -n "$p" ] && st="LIVE (pid $p)"
-    [ -z "$ADAPTER" ] && st="$st  [no adapter]"
-    printf "  %-12s %-22s %s\n" "$key" "$st" "$note"; n=$((n+1))
-  done < "$EXT"
-  [ "$n" -eq 0 ] && echo "  (none registered)"
+    ext_has_adapter "$k" || st="$st  [no adapter]"
+    note="$(awk -F'\t' -v k="$k" '$1==k{print $4; exit}' "$EXT" 2>/dev/null)"
+    printf "  %-12s %-22s %s\n" "$k" "$st" "${note:-}"; n=$((n+1))
+  done <<EOF
+$keys
+EOF
   echo
+  echo "each agent is a package:  $LAB_HOME/ext/<agent>/  (adapter.sh, agent.env, threads, work/)"
   echo "manage:  lab ext <agent> <start|stop|restart|status|logs|send|threads|chat>"
   echo "add:     lab ext setup <agent>"
 }
@@ -78,9 +84,26 @@ ext_list() {
 # --- setup: scaffold an adapter and walk the user/agent through it ---
 ext_setup() {
   local key; key="$(printf '%s' "${1:?usage: lab ext setup <agent>}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//')"
+  ext_migrate_legacy "$key"
   use_agent "$key"
-  local dest="$LAB_HOME/adapters/$key.sh"
-  mkdir -p "$LAB_HOME/adapters"
+  local pkg="$LAB_HOME/ext/$key"
+  local dest="$pkg/adapter.sh"
+  mkdir -p "$pkg/work"
+  # this agent's own settings file — per-agent values beat the global lab.env
+  if [ ! -f "$pkg/agent.env" ]; then
+    cat > "$pkg/agent.env" <<AENV
+# Settings for the '$key' external agent only. Sourced after \$LAB_HOME/lab.env, so these
+# win over the global values; a variable set on the command line still wins over both.
+# Uncomment what you need — every one of them has a working default.
+#: "\${LAB_EXT_CD:=/path/to/the/repo/it/reviews}"   # working root (default: \$PWD)
+#: "\${LAB_EXT_WORK:=/path/to/scratch/$key}"        # scratch; move OFF \$HOME if transcripts grow
+#: "\${LAB_EXT_TIMEOUT:=900}"                       # seconds per request
+#: "\${LAB_EXT_INTERVAL:=30}"                       # inbox poll seconds
+#: "\${LAB_EXT_BACKOFF:=900}"                       # sleep after a rate limit
+# Tool settings belong here too, e.g.:  #: "\${MY_CLI_MODEL:=fast}"
+AENV
+    echo "lab ext: created $pkg/agent.env"
+  fi
   if [ -f "$dest" ]; then
     echo "lab ext: adapter already exists: $dest"
   else
@@ -123,6 +146,8 @@ EOF
 }
 
 agent_start() {
+  ext_migrate_legacy "$KEY"; ext_paths "$KEY"   # fold a pre-package install into ext/<agent>/
+  mkdir -p "$PKG/work"
   local p; p="$(running_pid)"
   [ -n "$p" ] && { echo "$KEY daemon already running (pid $p)."; return 0; }
   [ -x "$DAEMON" ] || die "bridge not found or not executable: $DAEMON"
@@ -206,16 +231,26 @@ agent_chat() {
 
 # (re)start an external agent's daemon only if it is down — idempotent; cron-driven.
 # Folds in the old standalone keepalive (@reboot + every few minutes keeps it alive).
+# Keep EVERY installed agent up, not just one. With no argument it sweeps them all, so a
+# newly-added agent is durable the moment it is installed — no crontab edit needed.
 ext_keepalive() {
-  local kagent="${1:-${LAB_EXT_AGENT:-codex}}"
   export PATH="${LAB_NODE_BIN:+$LAB_NODE_BIN:}$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
-  local klog="${LAB_CODEX_WORK:-$LAB_HOME/.work/$kagent}/keepalive.log"
-  mkdir -p "$(dirname "$klog")" 2>/dev/null || true
-  local out; out="$("$SELF/lab-ext" "$kagent" start 2>&1)" || true
-  case "$out" in
-    *"already running"*) : ;;
-    *) printf '%s  %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | tr '\n' ' ')" >> "$klog" 2>/dev/null || true ;;
-  esac
+  local agents k klog out
+  if [ -n "${1:-}" ]; then agents="$1"; else agents="$(ext_agent_keys)"; fi
+  [ -n "$agents" ] || return 0
+  while read -r k; do
+    [ -n "$k" ] || continue
+    ext_has_adapter "$k" || continue          # not set up yet — nothing to keep alive
+    klog="$LAB_HOME/ext/$k/keepalive.log"     # this agent's own log, never another's
+    mkdir -p "$(dirname "$klog")" 2>/dev/null || true
+    out="$("$SELF/lab-ext" "$k" start 2>&1)" || true
+    case "$out" in
+      *"already running"*) : ;;
+      *) printf '%s  %s\n' "$(date '+%F %T')" "$(printf '%s' "$out" | tr '\n' ' ')" >> "$klog" 2>/dev/null || true ;;
+    esac
+  done <<EOF
+$agents
+EOF
 }
 
 sub="${1:-list}"; shift || true

@@ -123,8 +123,9 @@ for c in codex gemini aider opencode cursor-agent; do command -v "$c" >/dev/null
 ```
 
 - **If `codex` is installed**, a reference adapter already ships — just register and start it.
-- **For anything else**, run `lab ext setup <agent>`; it scaffolds
-  `$LAB_HOME/adapters/<agent>.sh` and prints the contract. **You write the adapter for them** —
+- **For anything else**, run `lab ext setup <agent>`; it creates the package
+  `$LAB_HOME/ext/<agent>/` (an `adapter.sh` to fill in, plus its own `agent.env` for that agent's
+  settings) and prints the contract. **You write the adapter for them** —
   it's one required function, `adapter_run`: read `$PROMPT_FILE`, write the answer to `$OUT_FILE`,
   noise to `$LOG_FILE`, resume via `$SESSION_ID`, inspect `$PROJECT` read-only. Model it on
   `adapters/codex.sh`. Delete the `ADAPTER_UNIMPLEMENTED` line when done.

@@ -203,11 +203,15 @@ cmd_init() {
 #LAB_IDLE_MIN=360           # minutes idle before a session stops being a valid send target
 #LAB_WATCH_INTERVAL=30      # seconds between inbox polls for `lab watch`
 
-# ── external reviewer (optional; `lab ext`) ──────────────────────────────────
-#LAB_CODEX_WORK=/path/to/scratch/lab-codex   # PUT THIS ON SCRATCH — transcripts accumulate
-#LAB_CODEX_CD=/path/to/project               # repo it reviews, read-only (default: $PWD)
-#LAB_CODEX_BIN=codex                         # reviewer CLI (default: found on PATH)
-#LAB_CODEX_MODEL=gpt-5.6-sol
+# ── external reviewers (optional; `lab ext`) ─────────────────────────────────
+# Each external agent is a self-contained package with its OWN settings file:
+#     $LAB_HOME/ext/<agent>/agent.env      <- put per-agent values there, not here
+# Anything set below is only a DEFAULT shared by every external agent.
+#LAB_EXT_CD=/path/to/project     # working root a reviewer inspects (default: $PWD)
+#LAB_EXT_TIMEOUT=900             # seconds per request
+#LAB_EXT_INTERVAL=30             # inbox poll seconds
+# Tool-specific settings (model, binary, sandbox) belong to that tool's adapter —
+# see ext/<agent>/agent.env, created by `lab ext setup <agent>`.
 CFG
     echo "lab: wrote $target/lab.env (all options commented at their defaults)"
   else
@@ -218,7 +222,7 @@ CFG
   echo
   echo "  It works as-is — every setting has a default. Worth a look before you rely on it:"
   echo "    • LAB_ALERT_CMD   — notify-send does nothing on a headless box; alerts would be silent"
-  echo "    • LAB_CODEX_WORK  — if you use the external reviewer, point it at scratch, not \$HOME"
+  echo "    • ext/<agent>/agent.env — each external reviewer's own settings (scratch path, timeout)"
   echo "    • the thresholds  — what 'stalled' means depends on your lab's tempo"
   echo "  Custom wording: drop $target/templates/meeting-agenda.md (or checkin.md)"
   echo

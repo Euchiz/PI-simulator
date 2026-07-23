@@ -32,26 +32,32 @@ if [ -f "$LAB_HOME/lab.env" ]; then
 fi
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
+# This daemon is a standalone service, NOT a Claude Code session. If it was launched from
+# one it would inherit that session's identity and sign every reply with the LAUNCHER's
+# name instead of this agent's, so drop it before anything sends mail.
+unset CLAUDE_JOB_DIR CLAUDE_CODE_SESSION_ID
+
 LAB="$SELF/lab"
-KEY="$AGENT"
-INBOX="$LAB_HOME/inbox/$KEY"
-LOCKDIR="$LAB_HOME/.watch"
-LOCK="$LOCKDIR/$KEY.lock"
 EXT="$LAB_HOME/external.tsv"
-THREADS="$LOCKDIR/$KEY.threads"          # subject-key -> session-id map (conversation memory)
+LOCKDIR="$LAB_HOME/.watch"
+. "$SELF/lab-ext-common.sh"              # the per-agent package layout
+
+# Everything for THIS agent: package dir, adapter, threads, log, work, lock — and its own
+# agent.env, loaded here so the knobs below pick up per-agent values.
+ext_migrate_legacy "$AGENT"
+ext_paths "$AGENT"
 
 # Framework knobs. Tool knobs (model, sandbox, …) belong to the adapter.
 INTERVAL="${LAB_EXT_INTERVAL:-30}"       # inbox poll seconds
 TIMEOUT="${LAB_EXT_TIMEOUT:-900}"        # per-request seconds
 BACKOFF="${LAB_EXT_BACKOFF:-900}"        # sleep after a transient/quota failure
 PROJECT="${LAB_EXT_CD:-$PWD}"            # working root the reviewer inspects
-WORK="${LAB_EXT_WORK:-$LAB_HOME/.work/$KEY}"   # prompts+outputs — point at SCRATCH, not $HOME
 [ -n "${LAB_NODE_BIN:-}" ] && export PATH="$LAB_NODE_BIN:$PATH"
 
 # --- load the adapter -------------------------------------------------------------
 find_adapter() {
   local c
-  for c in "${LAB_EXT_ADAPTER:-}" "$LAB_HOME/adapters/$KEY.sh" "$SELF/../adapters/$KEY.sh"; do
+  for c in "${LAB_EXT_ADAPTER:-}" "$PKG/adapter.sh" "$LAB_HOME/adapters/$KEY.sh" "$SELF/../adapters/$KEY.sh"; do
     [ -n "$c" ] && [ -f "$c" ] && { printf '%s' "$c"; return 0; }
   done
   return 1
