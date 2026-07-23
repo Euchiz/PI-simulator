@@ -368,7 +368,7 @@ CFG
   echo "    • LAB_ALERT_CMD   — notify-send does nothing on a headless box; alerts would be silent"
   echo "    • LAB_CODEX_WORK  — if you use the external reviewer, point it at scratch, not \$HOME"
   echo "    • the thresholds  — what 'stalled' means depends on your lab's tempo"
-  echo "  Custom wording: drop $target/templates/meeting-agenda.md (or tuesday-delta.md)"
+  echo "  Custom wording: drop $target/templates/meeting-agenda.md (or checkin.md)"
   echo
   echo "  next:  export LAB_HOME=$target        (add to your shell rc)"
   echo "         lab register <session-name> [project-path]"
