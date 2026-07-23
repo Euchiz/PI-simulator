@@ -33,19 +33,36 @@ lab send <agent> "…" "…"       an agent hands something to another
 lab data check <dataset-id>    an agent checks before re-downloading
 ```
 
-## 🚀 Setting it up
+## ⚡ Quick start
 
-**Ask an agent to do it.** Clone this repo, open a Claude Code session inside it, and paste:
+You don't install this by hand — you hand it to an agent and answer a few questions.
 
-> Read `docs/AGENT-SETUP.md` in this repo and set up PI simulator for me. Follow it exactly:
-> detect what you can, ask me only what you genuinely can't, and verify at the end.
+**1. Clone it.**
 
-It works out what your machine needs, asks you a few questions, sets everything up, and checks that
-it actually works before telling you it's done. That's the intended route — you shouldn't have to
-read any of the rest of this.
+```bash
+git clone git@github.com:Euchiz/PI-simulator.git
+cd PI-simulator
+```
+
+**2. Open a new Claude Code session in that folder** and name it **`lab manager`**. (Any name
+works — it will configure itself around whatever you choose.)
+
+**3. Paste this into that session:**
+
+> Read `docs/AGENT-SETUP.md` in this repo and set up PI simulator for me — detect what you can,
+> ask me only what you genuinely can't, and verify at the end. Then run `lab manager` and follow
+> those instructions to become this lab's manager session.
+
+That's it. That one session works out what your machine needs, installs everything, asks which of
+your other Claude Code sessions belong to the lab and registers them, offers to schedule the
+standups and daily health check, and tells you plainly what it set up and what it didn't.
+
+From then on it's your **lab manager**: the session you ask for a standup, for what's stuck, or for
+the weekly write-up — while your other sessions get on with the research. You shouldn't need to
+read the rest of this page.
 
 <details>
-<summary>Prefer to do it by hand</summary>
+<summary>Prefer to install it by hand</summary>
 
 ```bash
 git clone git@github.com:Euchiz/PI-simulator.git
@@ -53,6 +70,7 @@ cd PI-simulator && ./install.sh
 lab init ~/lab
 echo 'export LAB_HOME=~/lab' >> ~/.bashrc
 lab register analysis /path/to/project    # once per agent
+lab manager                               # prints the text to paste into your manager session
 ```
 </details>
 

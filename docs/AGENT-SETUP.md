@@ -172,6 +172,11 @@ Then tell the user, in plain language:
 - **what you did NOT set up**, and how to add it later
 - if you edited any project file, **exactly which ones**
 
+Finally, if this session is meant to be their lab manager, run `lab manager` and follow it: register
+your own identity, then offer to bring their other sessions in. If it is not, tell them to open a
+session for that role and paste in what `lab manager` prints — otherwise the scheduled standups and
+check-ins have nobody to report to.
+
 ## Common failure modes
 
 | symptom | cause |
