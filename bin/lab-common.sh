@@ -17,6 +17,10 @@ REG="$LAB_HOME/registry.md"
 BOARD="$LAB_HOME/BOARD.md"
 INBOX="$LAB_HOME/inbox"
 ARCH="$LAB_HOME/archive"
+# Who plays the lab-manager role. It is just a session key, so the role can be named
+# anything — set LAB_MANAGER in lab.env if your manager session is not "lab-manager",
+# otherwise the scheduled jobs would write to a mailbox nobody reads.
+LAB_MANAGER="${LAB_MANAGER:-lab-manager}"
 MEET="$LAB_HOME/meeting"
 ACTIVE="$MEET/.active"
 # dir of the lab scripts (so a module can find its siblings: lab-roster, lab-msg, …)

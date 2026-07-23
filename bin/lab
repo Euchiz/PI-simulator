@@ -86,6 +86,7 @@ lab — setup & admin
   lab init [path]                  Create a fresh LAB_HOME (blackboard) skeleton
   lab register <project> [path]    Register a session/project (and wire hooks if path given)
   lab projects                     List registered projects
+  lab manager                      Print the text to paste into a new lab-manager session
   lab name | whoami                This session's canonical key / which project this dir maps to
   lab ext [agent] <cmd>            External (non-Claude) reviewers — see `lab ext`
 
@@ -100,7 +101,7 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   MEETINGS      lab meeting [convene|post|read|status|compile|list|close|checkin]
   DATA          lab data [check|find|add|update|show|list|mv|render|export|audit|maint]
   ANNOUNCE      lab note · board · status · digest · health
-  ADMIN         lab init · register · projects · name · whoami · ext
+  ADMIN         lab init · register · manager · projects · name · whoami · ext
 
   lab help <topic>     topics: messaging, tasks, meetings, data, board, admin
   lab <cmd> --help     per-command flags (data/task/ext)
@@ -227,7 +228,15 @@ CFG
   echo "  Custom wording: drop $target/templates/meeting-agenda.md (or checkin.md)"
   echo
   echo "  next:  export LAB_HOME=$target        (add to your shell rc)"
-  echo "         lab register <session-name> [project-path]"
+  echo
+  echo "  ── Start your lab manager ─────────────────────────────────────────────"
+  echo "  Open a NEW Claude Code session, name it \"lab manager\" (any name works),"
+  echo "  and paste into it the text printed by:"
+  echo
+  echo "        lab manager"
+  echo
+  echo "  That session registers itself, brings your other sessions into the lab, and"
+  echo "  from then on runs the standups, health checks and weekly reports for you."
 }
 
 cmd_board() { ensure_init; cat "$BOARD"; }
@@ -258,6 +267,46 @@ cmd_digest() {
   cat "$out"
 }
 
+# The paste-in text that turns a fresh Claude Code session into this lab's manager.
+# Wording is yours: drop a $LAB_HOME/templates/lab-manager.md to replace it ({{manager}}
+# is substituted with the configured manager key).
+cmd_manager() {
+  local tpl="$LAB_HOME/templates/lab-manager.md" body
+  if [ -f "$tpl" ]; then body="$(cat "$tpl")"
+  else
+read -r -d '' body <<'EOF' || true
+You are the LAB MANAGER for my multi-agent lab. Set yourself up, then run the lab's
+affairs for me.
+
+1. IDENTITY. Run `lab name` to see the key this session resolves to, then
+   `lab register <that key>`. If it is not "{{manager}}", append
+   LAB_MANAGER="<that key>" to $LAB_HOME/lab.env (quoted) — otherwise the scheduled
+   jobs will write to a mailbox nobody reads.
+2. LEARN THE SYSTEM. Skim `lab help` and docs/PROTOCOL.md. `lab who` shows who you
+   can reach right now.
+3. YOUR JOB IS THE LAB'S AFFAIRS, NOT ITS RESEARCH. You convene standups
+   (`lab meeting convene`), chase whoever has not posted (`lab meeting status`),
+   compile the record (`lab meeting compile`), keep the task bulletin and the
+   announcement board tidy (`lab task`, `lab board`), read the daily health check
+   (`lab health`), and turn a week of posts into a summary when I ask. If research
+   needs doing, post it as a task — do not do it yourself.
+4. BRING THE OTHERS IN. Ask me which of my Claude Code sessions belong to this lab,
+   register each one (`lab register <name> <project-path>`), and offer to wire their
+   SessionStart hooks so they read their mail automatically. Show me the exact diff
+   before touching any file inside my projects.
+5. SCHEDULE (optional). Offer the jobs in examples/crontab.example — daily health
+   check, dataset maintenance, standups, between-meeting check-in. Ask before editing
+   my crontab, and put my manager key in the LAB_FROM= of those lines.
+6. REPORT BACK in plain English: where the blackboard is, who is registered, what you
+   scheduled, and what you deliberately did NOT set up.
+
+After that, when I say "run a standup", "what is stuck?", or "write the weekly
+report", handle it with these commands and answer me in plain English.
+EOF
+  fi
+  printf '%s\n' "${body//\{\{manager\}\}/$LAB_MANAGER}"
+}
+
 cmd_whoami() { project_for_dir || echo "(this dir maps to no registered project)"; }
 
 cmd_name() {
@@ -284,6 +333,7 @@ case "$cmd" in
   note)      cmd_note "$@";;
   digest)    cmd_digest "$@";;
   health)    exec bash "$SELF/lab-daily" "$@";;
+  manager)   cmd_manager "$@";;
   whoami)    cmd_whoami "$@";;
   name)      cmd_name "$@";;
   ""|-h|--help|help) usage "${1:-}";;

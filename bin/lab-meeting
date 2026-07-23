@@ -178,20 +178,20 @@ meeting_list() {
 # the base; these updates amend it, so no second full meeting is convened.
 # Schedule it on whatever day suits your lab — the day lives in your crontab, not here.
 meeting_checkin() {
-  export LAB_FROM=lab-manager
+  export LAB_FROM="$LAB_MANAGER"
   export PATH="$SELF:/usr/local/bin:/usr/bin:/bin"
   local body
   # Wording is yours: $LAB_HOME/templates/checkin.md overrides the default below.
   if [ -f "$LAB_HOME/templates/checkin.md" ]; then
     body="$(cat "$LAB_HOME/templates/checkin.md")"
   else
-read -r -d '' body <<'EOF' || true
+read -r -d '' body <<EOF || true
 Check-in — there is NO meeting in this slot.
 
 If you have NEW results or changes since your last meeting post, send them
 straight to the lab manager (short is fine — just what's new, not a full update):
 
-  ~/lab/bin/lab send lab-manager "<short subject>" "<what changed since the last meeting>"
+  ~/lab/bin/lab send $LAB_MANAGER "<short subject>" "<what changed since the last meeting>"
 
 If nothing has changed, do nothing — no reply needed.
 

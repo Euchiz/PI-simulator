@@ -205,7 +205,7 @@ agent_send() {
   local subj="${1:?usage: lab ext <agent> send <subject> <body>}"; shift || true
   local body="${*:-}"; [ -n "$body" ] || { [ -t 0 ] || body="$(cat)"; }
   [ -n "$body" ] || die "need a body"
-  local me="${LAB_FROM:-lab-manager}"
+  local me="${LAB_FROM:-${LAB_MANAGER:-lab-manager}}"
   LAB_FROM="$me" "$LAB" send "$KEY" "$subj" "$body"
   echo "sent to $KEY as '$me' — read the reply with:  lab read $me"
   echo "(same subject later = same conversation; new subject = fresh session)"

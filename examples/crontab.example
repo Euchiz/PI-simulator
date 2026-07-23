@@ -1,5 +1,7 @@
 # PI simulator — optional scheduled jobs. `crontab -e` and adjust paths.
 # Assumes `lab` and friends are on PATH (see install.sh) and LAB_HOME is set.
+# LAB_FROM below must match your lab-manager session key (see LAB_MANAGER in lab.env),
+# otherwise replies to the check-in land in a mailbox nobody reads.
 
 # Daily health check -> $LAB_HOME/HEALTH.md, alerts only when something is wrong
 7 8 * * *  LAB_HOME=$HOME/lab lab-daily >> $HOME/lab/alerts/.cron.log 2>&1
