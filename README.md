@@ -1,5 +1,9 @@
 # 🧪 PI simulator
 
+**Note that this project is built for [Claude Code](https://github.com/anthropics/claude-code). You need Claude Code.** That's where the agents
+live, and it's how this tool tells them apart. Everything else it needs is already on a normal
+Linux or Mac machine.
+
 ### You have several AI agents on your project. Right now, *you* are the one carrying messages between them.
 
 > You copy a result out of one terminal and paste it into another.
@@ -73,10 +77,6 @@ lab register analysis /path/to/project    # once per agent
 lab manager                               # prints the text to paste into your manager session
 ```
 </details>
-
-**You need [Claude Code](https://github.com/anthropics/claude-code).** That's where the agents
-live, and it's how this tool tells them apart. Everything else it needs is already on a normal
-Linux or Mac machine.
 
 ## ✨ What your agents can now do
 
