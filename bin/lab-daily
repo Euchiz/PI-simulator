@@ -11,21 +11,52 @@ if [ -f "$LAB_HOME/lab.env" ]; then
   else echo "lab: WARNING — $LAB_HOME/lab.env has a syntax error and was IGNORED (values with spaces need quotes). Check: bash -n $LAB_HOME/lab.env" >&2; fi
 fi
 
+# Standalone health job, NOT a Claude session: if launched from one (`lab health` in a
+# session) don't inherit its identity, or resolve_self would sign the alert with the
+# launcher's name instead of the health job's.
+unset CLAUDE_JOB_DIR CLAUDE_CODE_SESSION_ID
 export PATH="$HOME/.local/bin:$SELF:/usr/local/bin:/usr/bin:/bin"
 TS="$(date +%Y-%m-%d)"
 LOG="$LAB_HOME/HEALTH.md"
 
 FACTS="$(python3 "$SELF/lab-healthcheck" 2>&1)"
 
+# Node + compute facts (the technician's domain). Cheap and safe — no tree walks; each
+# potentially-blocking call is timeout-guarded so a stale NFS mount cannot hang the check.
+# Which filesystems to watch is configurable (defaults: $HOME + external-reviewer scratch).
+LAB_NODE_FS="${LAB_NODE_FS:-$HOME${LAB_EXT_WORK:+ $LAB_EXT_WORK}}"
+node_facts() {
+  echo "## Node / compute  ($(hostname 2>/dev/null))"
+  local l1 l5 l15 rest
+  read -r l1 l5 l15 rest < /proc/loadavg 2>/dev/null || true
+  echo "  load 1/5/15: ${l1:-?} ${l5:-?} ${l15:-?}   cores: $(nproc 2>/dev/null || echo '?')"
+  free -h 2>/dev/null | awk '/^Mem:/{print "  mem: "$3" used / "$2" total"}'
+  local fs
+  for fs in $LAB_NODE_FS; do
+    [ -e "$fs" ] || continue
+    timeout 10 df -hP "$fs" 2>/dev/null | awk 'NR==2{printf "  disk %-30s %s used, %s free\n", $6, $5, $4}'
+  done
+  command -v nvidia-smi >/dev/null 2>&1 &&
+    timeout 10 nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader 2>/dev/null |
+      awk '{print "  gpu "$0}'
+  return 0
+}
+FACTS="$FACTS
+
+$(node_facts)"
+
 read -r -d '' INSTR <<'EOF' || true
-You are the lab manager running a DAILY health check over a set of Claude coding
-sessions that share a coordination blackboard. Below is today's machine-gathered
-health data. Decide whether anything is genuinely worth pulling the user's
-attention to. Be conservative: a session that is freshly "working" or cleanly
-"done" is fine and needs no flag. Worth flagging: a session marked working but
-untouched >24h (possibly stalled), blocked/failed/errored states that look stuck,
-a session waiting on a coordination message that isn't coming, unread inbox
-backlog (sessions not picking up coordination), or board items aging unresolved.
+You are running the lab's DAILY health check. It covers two things: the coordination
+blackboard (Claude coding sessions sharing it) and the compute NODE it all runs on.
+Below is today's machine-gathered data. Decide whether anything is genuinely worth
+pulling attention to. Be conservative: a session freshly "working" or cleanly "done"
+is fine and needs no flag.
+Worth flagging (coordination): a session marked working but untouched >24h (possibly
+stalled), blocked/failed/errored states that look stuck, a session waiting on a message
+that isn't coming, unread inbox backlog, or board items aging unresolved.
+Worth flagging (node/compute): a disk over ~90% full or nearly out of free space,
+sustained load far above the core count, memory near exhaustion, a GPU error, or an
+external-reviewer daemon that is DOWN.
 
 Respond in EXACTLY one of two forms, nothing else:
 - If nothing needs attention:  OK: <6-12 word summary>
@@ -58,15 +89,20 @@ fi
   echo "</details>"
 } > "$LOG"
 
-# Alert only when flagged.
+# Alert only when flagged. The daily check is the TECHNICIAN's to act on, so deliver the
+# flag to their inbox (falling back to the manager if no technician is configured).
 if printf '%s' "$VERDICT" | head -1 | grep -qiE '^FLAG'; then
   mkdir -p "$LAB_HOME/alerts"
   cp "$LOG" "$LAB_HOME/alerts/$TS.md"
-  SUMMARY="$(printf '%s' "$VERDICT" | tail -n +2 | head -4)"
-  # Alert channel is pluggable: notify-send only works on a Linux desktop. Set
-  # LAB_ALERT_CMD to anything that takes "<title>" "<body>" (mail, slack, pushover…).
+  SUMMARY="$(printf '%s' "$VERDICT" | tail -n +2 | head -6)"
+  HEALTH_TO="${LAB_TECHNICIAN:-${LAB_MANAGER:-lab-manager}}"
+  LAB_FROM="lab-health" "$SELF/lab" send --force "$HEALTH_TO" "health check — issues to review ($TS)" \
+    "$SUMMARY
+
+Full report: $LAB_HOME/HEALTH.md" >/dev/null 2>&1 || true
+  # Also fire the pluggable desktop alert if one is configured (notify-send needs a desktop).
   ${LAB_ALERT_CMD:-notify-send} "Lab health: issues to review" "$SUMMARY" 2>/dev/null || true
-  echo "[$(date)] FLAGGED -> alerts/$TS.md" >> "$LAB_HOME/alerts/.runlog"
+  echo "[$(date)] FLAGGED -> alerts/$TS.md -> $HEALTH_TO" >> "$LAB_HOME/alerts/.runlog"
 else
   echo "[$(date)] OK" >> "$LAB_HOME/alerts/.runlog" 2>/dev/null || { mkdir -p "$LAB_HOME/alerts"; echo "[$(date)] OK" >> "$LAB_HOME/alerts/.runlog"; }
 fi

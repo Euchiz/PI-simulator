@@ -21,6 +21,10 @@ ARCH="$LAB_HOME/archive"
 # anything — set LAB_MANAGER in lab.env if your manager session is not "lab-manager",
 # otherwise the scheduled jobs would write to a mailbox nobody reads.
 LAB_MANAGER="${LAB_MANAGER:-lab-manager}"
+# Who plays the technician role: node + computation health, owns the daily health check.
+# Optional — leave empty until you set one up. When empty, the daily check's alerts fall
+# back to the manager. Set LAB_TECHNICIAN in lab.env to your technician session's key.
+LAB_TECHNICIAN="${LAB_TECHNICIAN:-}"
 MEET="$LAB_HOME/meeting"
 ACTIVE="$MEET/.active"
 # dir of the lab scripts (so a module can find its siblings: lab-roster, lab-msg, …)

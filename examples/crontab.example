@@ -3,7 +3,9 @@
 # LAB_FROM below must match your lab-manager session key (see LAB_MANAGER in lab.env),
 # otherwise replies to the check-in land in a mailbox nobody reads.
 
-# Daily health check -> $LAB_HOME/HEALTH.md, alerts only when something is wrong
+# Daily health check -> $LAB_HOME/HEALTH.md, alerts only when something is wrong.
+# A flag is mailed to your technician session (LAB_TECHNICIAN in lab.env), else the manager.
+# Set LAB_NODE_FS in lab.env to the filesystems it should watch (default: $HOME + scratch).
 7 8 * * *  LAB_HOME=$HOME/lab lab-daily >> $HOME/lab/alerts/.cron.log 2>&1
 
 # Dataset registry maintenance: human snapshot + CSV backup + dead-path audit

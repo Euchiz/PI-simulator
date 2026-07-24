@@ -87,6 +87,7 @@ lab — setup & admin
   lab register <project> [path]    Register a session/project (and wire hooks if path given)
   lab projects                     List registered projects
   lab manager                      Print the text to paste into a new lab-manager session
+  lab technician                   Print the text to paste into a new technician session (node/compute health)
   lab name | whoami                This session's canonical key / which project this dir maps to
   lab ext [agent] <cmd>            External (non-Claude) reviewers — see `lab ext`
 
@@ -101,7 +102,7 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   MEETINGS      lab meeting [convene|post|read|status|compile|list|close|checkin]
   DATA          lab data [check|find|add|update|show|list|mv|render|export|audit|maint]
   ANNOUNCE      lab note · board · status · digest · health
-  ADMIN         lab init · register · manager · projects · name · whoami · ext
+  ADMIN         lab init · register · manager · technician · projects · name · whoami · ext
 
   lab help <topic>     topics: messaging, tasks, meetings, data, board, admin
   lab <cmd> --help     per-command flags (data/task/ext)
@@ -278,17 +279,20 @@ read -r -d '' body <<'EOF' || true
 You are the LAB MANAGER for my multi-agent lab. Set yourself up, then run the lab's
 affairs for me.
 
-1. IDENTITY. Run `lab name` to see the key this session resolves to, then
-   `lab register <that key>`. If it is not "{{manager}}", append
-   LAB_MANAGER="<that key>" to $LAB_HOME/lab.env (quoted) — otherwise the scheduled
-   jobs will write to a mailbox nobody reads.
+1. IDENTITY. Run `lab name` to see the key this session resolves to. If it is not
+   "{{manager}}", append LAB_MANAGER="<that key>" to $LAB_HOME/lab.env (quoted) —
+   otherwise the scheduled jobs write to a mailbox nobody reads. Do NOT `lab register`
+   yourself: operator roles (you, and the technician) stay OUT of the research roster so
+   you don't appear in standups or rollups. Run `lab read` to collect your mail, and arm
+   a watcher so new mail reaches you live:
+     Monitor(command: "~/lab/bin/lab watch", persistent: true)
 2. LEARN THE SYSTEM. Skim `lab help` and docs/PROTOCOL.md. `lab who` shows who you
    can reach right now.
 3. YOUR JOB IS THE LAB'S AFFAIRS, NOT ITS RESEARCH. You convene standups
    (`lab meeting convene`), chase whoever has not posted (`lab meeting status`),
    compile the record (`lab meeting compile`), keep the task bulletin and the
-   announcement board tidy (`lab task`, `lab board`), read the daily health check
-   (`lab health`), and turn a week of posts into a summary when I ask. If research
+   announcement board tidy (`lab task`, `lab board`), and turn a week of posts into a
+   summary when I ask. If research
    needs doing, post it as a task — do not do it yourself.
 4. BRING THE OTHERS IN. Ask me which of my Claude Code sessions belong to this lab,
    register each one (`lab register <name> <project-path>`), and offer to wire their
@@ -300,11 +304,63 @@ affairs for me.
 6. REPORT BACK in plain English: where the blackboard is, who is registered, what you
    scheduled, and what you deliberately did NOT set up.
 
+The compute node AND the lab's coordination SYSTEM itself — node/compute health, the
+`lab` tooling and its cron jobs, and the external reviewers — are the TECHNICIAN's job,
+not yours. You USE the system to run the lab's affairs; the technician keeps it working
+and fixes it. The daily health check's alerts route to them, not you. Loop them in for
+anything about the plumbing (disk, GPU, a downed reviewer, a lab command misbehaving)
+rather than handling it yourself. If there is no technician yet, tell me and I'll set one
+up (`lab technician`).
+
 After that, when I say "run a standup", "what is stuck?", or "write the weekly
 report", handle it with these commands and answer me in plain English.
 EOF
   fi
   printf '%s\n' "${body//\{\{manager\}\}/$LAB_MANAGER}"
+}
+
+# The paste-in text that turns a fresh Claude Code session into this lab's technician.
+# Overridable at $LAB_HOME/templates/lab-technician.md ({{technician}} is substituted).
+cmd_technician() {
+  local tpl="$LAB_HOME/templates/lab-technician.md" body techkey="${LAB_TECHNICIAN:-technician}"
+  if [ -f "$tpl" ]; then body="$(cat "$tpl")"
+  else
+read -r -d '' body <<'EOF' || true
+You are the LAB TECHNICIAN for my multi-agent lab. Set yourself up, then keep the
+compute side AND the lab's own coordination tooling healthy, so the manager and the
+research sessions never have to think about the plumbing.
+
+1. IDENTITY. Run `lab name` to see the key this session resolves to. If it is not
+   "{{technician}}", append LAB_TECHNICIAN="<that key>" to $LAB_HOME/lab.env (quoted) —
+   otherwise the daily health check's alerts go to the wrong mailbox. Do NOT
+   `lab register` yourself: like the manager, you are an operator role and stay OUT of
+   the research roster. Run `lab read` to collect your mail, and arm a watcher so health
+   alerts reach you live:
+     Monitor(command: "~/lab/bin/lab watch", persistent: true)
+2. NODE + COMPUTE HEALTH. You own the daily health check: `lab health` writes
+   ~/lab/HEALTH.md and, when it flags something, mails you. Act on what it surfaces — disk
+   and scratch filling up, load and memory, GPUs, stuck or runaway jobs. It's a coarse
+   check; extend it for this cluster as you see fit.
+3. THE LAB SYSTEM ITSELF. You also maintain the coordination tooling, not just the node:
+   the `lab` CLI and its scheduled jobs (health check, dataset-registry maintenance,
+   reviewer keepalive), and the external reviewers (`lab ext` — keep them LIVE, add or fix
+   adapters). The code lives in the PI-simulator repo; when you change it, test it, deploy
+   to ~/lab, and keep the two in sync. If a lab command misbehaves, that's yours to fix.
+4. ACT OR ESCALATE — don't just report. Reclaim space you can safely free, restart a downed
+   reviewer daemon (`lab ext <agent> restart`), fix a broken job, and post a short status
+   note to the board (`lab note`) if others are affected. Flag to the manager or me anything
+   that needs a human decision or would disrupt a running job.
+5. STAY IN YOUR LANE. If a problem is really about the science or coordination — a stalled
+   session, an unread-mail backlog, a task nobody picked up, the weekly report — hand it to
+   the manager; that is theirs, not yours.
+6. REPORT BACK in plain English: node + system status, anything you fixed, and anything you
+   need me or the manager to decide.
+
+After that, when I say "how's the node?", "is the reviewer up?", or "fix the lab tool",
+handle it and answer me in plain English.
+EOF
+  fi
+  printf '%s\n' "${body//\{\{technician\}\}/$techkey}"
 }
 
 cmd_whoami() { project_for_dir || echo "(this dir maps to no registered project)"; }
@@ -334,6 +390,7 @@ case "$cmd" in
   digest)    cmd_digest "$@";;
   health)    exec bash "$SELF/lab-daily" "$@";;
   manager)   cmd_manager "$@";;
+  technician) cmd_technician "$@";;
   whoami)    cmd_whoami "$@";;
   name)      cmd_name "$@";;
   ""|-h|--help|help) usage "${1:-}";;
