@@ -13,7 +13,12 @@
 #
 # Settings (put them in $LAB_HOME/lab.env, quoted):
 #   LAB_AGY_BIN     path/name of the CLI            (default: agy)
-#   LAB_AGY_MODEL   model override                  (default: agy's own configured model)
+#   LAB_AGY_MODEL   model id, e.g. gemini-3.1-pro-high. IMPORTANT: headless `--print`
+#                   IGNORES agy's settings.json model. With no override the backend serves
+#                   this account's default; a model the account cannot serve is silently
+#                   substituted (verify with the daemon-log line "Propagating selected
+#                   model override to backend: label=..."). Only set this if you need a
+#                   different model AND this account can actually serve it.
 #   LAB_AGY_EFFORT  low|medium|high                 (default: high)
 #   LAB_AGY_STATE   agy state dir                   (default: ~/.gemini/antigravity-cli)
 
