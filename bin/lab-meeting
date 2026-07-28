@@ -199,6 +199,8 @@ These updates amend the last meeting's record; they are not a new meeting. Anyth
 you send will be folded into the same week's report/slides.
 EOF
   fi
+  # templates may use {{manager}} for the reply target; keep it routed on $LAB_MANAGER
+  body="${body//\{\{manager\}\}/$LAB_MANAGER}"
   exec "$SELF/lab-msg" broadcast "Check-in — anything new since the last meeting?" "$body"
 }
 
