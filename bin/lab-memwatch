@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# lab-memwatch — node-RAM watchdog for cron. When memory is critically high, find the
+# top consumer, attribute it to a lab agent (its process env carries CLAUDE_JOB_DIR ->
+# job-id -> roster name), and warn THAT agent to move heavy compute off the login node.
+# Cheap when memory is fine (a single /proc/meminfo read, then exit). Rate-limited per
+# agent. Session backends (no CLAUDE_JOB_DIR) and operators are never warned.
+#
+# Env (via $LAB_HOME/lab.env): LAB_MEM_WARN_PCT (default 90), LAB_MEM_COOLDOWN_MIN (30).
+# Test: LAB_MEMWATCH_DRYRUN=1 [LAB_MEM_WARN_PCT=50] lab-memwatch  (prints, never sends).
+set -uo pipefail
+LAB="${LAB_HOME:-$HOME/lab}"
+[ -f "$LAB/lab.env" ] && { set -a; . "$LAB/lab.env" 2>/dev/null || true; set +a; }
+THRESH="${LAB_MEM_WARN_PCT:-90}"
+COOLDOWN_MIN="${LAB_MEM_COOLDOWN_MIN:-30}"
+DRY="${LAB_MEMWATCH_DRYRUN:-0}"
+ROSTER="$LAB/.roster.tsv"
+DIR="$LAB/.memwatch"; mkdir -p "$DIR"
+LOG="$DIR/memwatch.log"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+log() { echo "$(ts) $*" >> "$LOG"; }
+
+# 1) cheap gate — memory used% from MemAvailable
+used=$(awk '/^MemTotal/{t=$2}/^MemAvailable/{a=$2}END{printf "%d",(t-a)*100/t}' /proc/meminfo)
+if [ "${used:-0}" -lt "$THRESH" ]; then
+  [ "$DRY" = 1 ] && echo "mem ${used}% < ${THRESH}% — nothing to do"
+  exit 0
+fi
+
+OPS=" ${LAB_MANAGER:-lab-manager} ${LAB_TECHNICIAN:-} "
+
+# 2) top consumers by RSS+swap (kb), biggest first (prefilter by RSS, cap the work)
+mapfile -t TOP < <(
+  for pid in $(ps -eo pid= --sort=-rss 2>/dev/null | head -40); do
+    [ -r "/proc/$pid/status" ] || continue
+    awk -v p="$pid" '/^VmRSS/{r=$2}/^VmSwap/{s=$2}END{print (r+s)+0, p}' "/proc/$pid/status" 2>/dev/null
+  done | sort -rn | head -12
+)
+
+# 3) biggest consumer attributable to a current, non-operator agent
+top_desc=""; c_pid=""; c_kb=0; c_job=""; c_agent=""
+for row in "${TOP[@]}"; do
+  kb=${row%% *}; pid=${row##* }
+  [ -n "$top_desc" ] || top_desc="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ') pid=$pid $((kb/1024))MB"
+  job=$( { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -oE 'CLAUDE_JOB_DIR=.*/jobs/[0-9a-f]+' | grep -oE '[0-9a-f]+$' | head -1)
+  [ -n "$job" ] || continue
+  agent=$(awk -v j="$job" -F'\t' '$1==j{print $2}' "$ROSTER" 2>/dev/null)
+  [ -n "$agent" ] || continue
+  [ "$DRY" = 1 ] && echo "attributed: pid=$pid $((kb/1024))MB -> job=$job agent=$agent"
+  case "$OPS" in *" $agent "*) [ "$DRY" = 1 ] && echo "  ($agent is an operator — skip)"; continue;; esac
+  c_pid=$pid; c_kb=$kb; c_job=$job; c_agent=$agent; break
+done
+
+mb=$((c_kb/1024))
+if [ -z "$c_agent" ]; then
+  log "mem=${used}% — no agent-attributable top consumer (top: ${top_desc:-?}); logged only"
+  [ "$DRY" = 1 ] && echo "no non-operator agent attributable; would log only"
+  exit 0
+fi
+
+# 4) rate-limit per agent
+stamp="$DIR/$c_agent.last"; nowe=$(date +%s)
+if [ -f "$stamp" ] && [ $(( nowe - $(cat "$stamp" 2>/dev/null || echo 0) )) -lt $((COOLDOWN_MIN*60)) ]; then
+  log "mem=${used}% — $c_agent top (${mb}MB pid=$c_pid) but within ${COOLDOWN_MIN}m cooldown; not re-sent"
+  [ "$DRY" = 1 ] && echo "$c_agent within cooldown; would not re-send"
+  exit 0
+fi
+
+# 5) warn the agent
+proc="$(ps -o comm= -p "$c_pid" 2>/dev/null | tr -d ' ')"
+args="$(ps -o args= -p "$c_pid" 2>/dev/null | cut -c1-100)"
+subj="⚠ node RAM ${used}% — your job is the top memory consumer; please move heavy compute to SLURM"
+body="Automated node-health warning (technician mem-watch). The shared login node is at ${used}% RAM used (threshold ${THRESH}%). Your session's process is the single largest consumer right now:
+  pid=$c_pid  ${mb}MB (RSS+swap)  $proc
+  $args
+Heavy compute on this 5.8 GB shared login node degrades it for every session. Please run it on a SLURM node (srun/sbatch) and/or trim its footprint. If it's a short bounded run that will finish on its own, you can ignore this."
+
+if [ "$DRY" = 1 ]; then
+  echo "WOULD SEND -> $c_agent (job $c_job):"; echo "  subj: $subj"; echo "  ${mb}MB pid=$c_pid $proc"
+  exit 0
+fi
+# deliver by roster NAME (name-keyed inboxes; @jobid lands in a dir the session never reads)
+"$SELF/lab" send --force "$c_agent" "$subj" "$body" >> "$LOG" 2>&1
+echo "$nowe" > "$stamp"
+log "mem=${used}% — WARNED $c_agent (@$c_job): ${mb}MB pid=$c_pid $proc"
