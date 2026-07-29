@@ -193,6 +193,7 @@ cmd_init() {
 #LAB_INBOX_BACKLOG_H=48     # unread mail older than this -> not picking up coordination
 #LAB_TASK_STALE_D=5         # task unclaimed/untouched this many days -> flag
 #LAB_BOARD_RECENT_D=7       # window counted as "recent" announcements
+#LAB_HEALTH_ACCEPT_DARK=""  # space/comma-list of intentionally-retained dark sessions: show but don't flag
 
 # ── daily health check ───────────────────────────────────────────────────────
 #LAB_JUDGE=1                # 0 = skip the LLM pass entirely (raw facts, no token spend)

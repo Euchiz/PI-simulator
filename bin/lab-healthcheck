@@ -21,6 +21,11 @@ BOARD_AGING_D   = BOARD_RECENT_D
 def pkey(s):
     return re.sub(r'-+$', '', re.sub(r'^-+', '', re.sub(r'[^a-z0-9]+', '-', (s or '').lower())))[:50]
 
+# Sessions intentionally kept registered though "dark" (no job state / aging inbox) — a
+# settled coordination call, not a problem. Listed here (via $LAB_HEALTH_ACCEPT_DARK in
+# lab.env) so the check still shows them but stops raising a recurring flag for them.
+ACCEPT_DARK = {pkey(k) for k in os.environ.get("LAB_HEALTH_ACCEPT_DARK", "").replace(",", " ").split()}
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -67,8 +72,11 @@ lines.append("")
 for key in reg_keys:
     d = jobs.get(key)
     if not d:
-        lines.append(f"[NOJOB] {key:<18} — no job state found")
-        flags.append(f"{key}: no job state on disk (session never started or removed)")
+        if key in ACCEPT_DARK:
+            lines.append(f"[NOJOB*] {key:<18} — no job state (accepted-dark, intentionally retained)")
+        else:
+            lines.append(f"[NOJOB] {key:<18} — no job state found")
+            flags.append(f"{key}: no job state on disk (session never started or removed)")
         continue
     state = d.get("state", "?")
     upd = parse_iso(d.get("updatedAt"))
@@ -98,8 +106,11 @@ for d in sorted(glob.glob(os.path.join(INBOX, "*"))):
     oldest_h = max((age_h(datetime.fromtimestamp(os.path.getmtime(m), timezone.utc)) or 0) for m in msgs)
     note = ""
     if oldest_h > INBOX_BACKLOG_H:
-        note = "  <-- BACKLOG"
-        flags.append(f"{key}: {len(msgs)} unread for {fmt_age(oldest_h)} — not picking up coordination")
+        if key in ACCEPT_DARK:
+            note = "  (accepted-dark, retained)"
+        else:
+            note = "  <-- BACKLOG"
+            flags.append(f"{key}: {len(msgs)} unread for {fmt_age(oldest_h)} — not picking up coordination")
     lines.append(f"  {key}: {len(msgs)} unread (oldest {fmt_age(oldest_h)}){note}")
 if not any_inbox:
     lines.append("  (all inboxes empty)")
