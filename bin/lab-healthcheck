@@ -26,6 +26,11 @@ def pkey(s):
 # lab.env) so the check still shows them but stops raising a recurring flag for them.
 ACCEPT_DARK = {pkey(k) for k in os.environ.get("LAB_HEALTH_ACCEPT_DARK", "").replace(",", " ").split()}
 
+# Sessions that are LIVE but intentionally paused (idle-by-design, e.g. work on hold per
+# Zac) — they keep a job state but may sit "working"/"done" with an aging inbox. Listed via
+# $LAB_HEALTH_ACCEPT_PAUSED; shown (as PAUSED / "paused, retained") but not flagged.
+ACCEPT_PAUSED = {pkey(k) for k in os.environ.get("LAB_HEALTH_ACCEPT_PAUSED", "").replace(",", " ").split()}
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -88,7 +93,10 @@ for key in reg_keys:
     if state in ("blocked", "failed", "error"):
         tag = state.upper(); flags.append(f"{key}: state={state} — {detail}")
     elif state == "working" and a is not None and a > STALE_WORKING_H:
-        tag = "STALE"; flags.append(f"{key}: marked working but untouched {fmt_age(a)} — possibly stalled")
+        if key in ACCEPT_PAUSED:
+            tag = "PAUSED"
+        else:
+            tag = "STALE"; flags.append(f"{key}: marked working but untouched {fmt_age(a)} — possibly stalled")
     elif queued and (a is not None and a > STALE_WORKING_H):
         tag = "STUCK?"; flags.append(f"{key}: {queued} queued tasks, idle {fmt_age(a)}")
     lines.append(f"[{tag}] {key:<18} state={state:<8} upd {fmt_age(a):>4} ago — {detail}")
@@ -108,6 +116,8 @@ for d in sorted(glob.glob(os.path.join(INBOX, "*"))):
     if oldest_h > INBOX_BACKLOG_H:
         if key in ACCEPT_DARK:
             note = "  (accepted-dark, retained)"
+        elif key in ACCEPT_PAUSED:
+            note = "  (paused, retained)"
         else:
             note = "  <-- BACKLOG"
             flags.append(f"{key}: {len(msgs)} unread for {fmt_age(oldest_h)} — not picking up coordination")
