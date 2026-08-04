@@ -172,6 +172,9 @@ else:
         for r in openr:
             d = age_days(r)
             if d > TASK_STALE_D:
+                sug = pkey(r["suggested"] or "")
+                if sug and sug in ACCEPT_PAUSED:
+                    continue   # only tagged owner is a paused (idle-by-design) session — parked, not neglected
                 flags.append(f"task #{r['id']} unclaimed {d}d — '{r['title'][:60]}' (tagged: {r['suggested'] or 'nobody'})")
         for r in taken:
             d = age_days(r)
