@@ -31,6 +31,13 @@ ACCEPT_DARK = {pkey(k) for k in os.environ.get("LAB_HEALTH_ACCEPT_DARK", "").rep
 # $LAB_HEALTH_ACCEPT_PAUSED; shown (as PAUSED / "paused, retained") but not flagged.
 ACCEPT_PAUSED = {pkey(k) for k in os.environ.get("LAB_HEALTH_ACCEPT_PAUSED", "").replace(",", " ").split()}
 
+# Operator roles (manager, technician) are EVENT-DRIVEN: idle between events (health checks,
+# messages), which the harness records as state="blocked" with a rotating, often-stale detail.
+# That "blocked" is idle-waiting, not a real block — and a technician-blocked flag alerts the
+# technician about itself. So skip the blocked flag for operators (a real failed/error still
+# flags). Keys come from $LAB_MANAGER/$LAB_TECHNICIAN in lab.env.
+OPERATORS = {pkey(k) for k in (os.environ.get("LAB_MANAGER", "lab-manager"), os.environ.get("LAB_TECHNICIAN", "")) if k}
+
 def now():
     return datetime.now(timezone.utc)
 
@@ -91,7 +98,10 @@ for key in reg_keys:
     detail = (((d.get("output") or {}).get("result")) or d.get("detail") or "")[:140]
     tag = "OK"
     if state in ("blocked", "failed", "error"):
-        tag = state.upper(); flags.append(f"{key}: state={state} — {detail}")
+        if state == "blocked" and key in OPERATORS:
+            tag = "OPS"   # operator idle-between-events; not a real block, and no self-alert
+        else:
+            tag = state.upper(); flags.append(f"{key}: state={state} — {detail}")
     elif state == "working" and a is not None and a > STALE_WORKING_H:
         if key in ACCEPT_PAUSED:
             tag = "PAUSED"
