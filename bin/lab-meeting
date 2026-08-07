@@ -10,6 +10,10 @@ set -euo pipefail
 # so meeting convene/status skip them. They still auto-register via `lab status`, so
 # excluding here (not in the registry) keeps them in the digest but off the meeting list.
 is_operator() { [ "$1" = "$LAB_MANAGER" ] || { [ -n "$LAB_TECHNICIAN" ] && [ "$1" = "$LAB_TECHNICIAN" ]; }; }
+# Not a standup participant: operators (they coordinate, don't report) plus any session listed
+# in $LAB_MEETING_SKIP — e.g. an intermittent utility worker that never answers standup requests.
+# Skipped by convene, status, and check-in fan-out; stays registered + messageable.
+skip_standup() { is_operator "$1" && return 0; case " ${LAB_MEETING_SKIP:-} " in *" $1 "*) return 0;; esac; return 1; }
 
 meet_active() { [ -f "$ACTIVE" ] && cat "$ACTIVE" 2>/dev/null || true; }
 meet_latest() { local d last=""; for d in "$MEET"/*/; do [ -d "$d" ] || continue; last="$(basename "$d")"; done; echo "$last"; }
@@ -58,7 +62,7 @@ EOF
   local sent=0
   while read -r key; do
     [ -n "$key" ] || continue
-    is_operator "$key" && continue          # operators aren't standup participants
+    skip_standup "$key" && continue         # not a standup participant (operators + LAB_MEETING_SKIP)
     "$SELF/lab-msg" send --force "$key" "lab meeting $id — post your update" \
 "Lab meeting '$id' is open. Post a FULL update — key results (numbers, tables),
 figures (embed by absolute path or drop in $dir/assets/), blockers, and next
@@ -161,7 +165,7 @@ meeting_status() {
   echo "Meeting '$id' — attendance:"
   while read -r key; do
     [ -n "$key" ] || continue
-    is_operator "$key" && continue          # operators aren't standup participants
+    skip_standup "$key" && continue         # not a standup participant (operators + LAB_MEETING_SKIP)
     if [ -f "$dir/posts/$key.md" ]; then echo "  [x] $key (posted)"; else echo "  [ ] $key (pending)"; fi
   done < <(grep '^- \*\*' "$REG" 2>/dev/null | sed -E 's/^- \*\*([^*]+)\*\*.*/\1/')
 }
@@ -208,7 +212,15 @@ EOF
   fi
   # templates may use {{manager}} for the reply target; keep it routed on $LAB_MANAGER
   body="${body//\{\{manager\}\}/$LAB_MANAGER}"
-  exec "$SELF/lab-msg" broadcast "Check-in — anything new since the last meeting?" "$body"
+  # fan out to standup participants only (skip operators + LAB_MEETING_SKIP), same rule as convene
+  local key sent=0
+  while read -r key; do
+    [ -n "$key" ] || continue
+    skip_standup "$key" && continue
+    "$SELF/lab-msg" send --force "$key" "Check-in — anything new since the last meeting?" "$body" >/dev/null
+    sent=$((sent+1))
+  done < <(grep '^- \*\*' "$REG" 2>/dev/null | sed -E 's/^- \*\*([^*]+)\*\*.*/\1/')
+  echo "lab: check-in sent to $sent participant(s)"
 }
 
 sub="${1:-read}"; shift || true

@@ -195,6 +195,8 @@ cmd_init() {
 #LAB_BOARD_RECENT_D=7       # window counted as "recent" announcements
 #LAB_HEALTH_ACCEPT_DARK=""  # space/comma-list of intentionally-retained dark sessions: show but don't flag
 #LAB_HEALTH_ACCEPT_PAUSED="" # space/comma-list of LIVE-but-paused sessions: suppress stale-working + backlog
+# ── meetings ─────────────────────────────────────────────────────────────────
+#LAB_MEETING_SKIP=""        # space/comma-list of registered NON-participants: skip convene/status/check-in fan-out
 
 # ── daily health check ───────────────────────────────────────────────────────
 #LAB_JUDGE=1                # 0 = skip the LLM pass entirely (raw facts, no token spend)
