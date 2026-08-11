@@ -2,7 +2,7 @@
   "_comment": "Claude Code SessionStart hook: read the inbox and prompt the agent to arm a live watcher. Put this in your project's .claude/settings.json. Adjust the path to your install.",
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "lab read 2>/dev/null; printf '%s\\n' '[lab] If you have NOT already armed a lab-watch Monitor in THIS session, arm one now: Monitor(command: \"lab watch\", description: \"incoming lab messages\", persistent: true). If one is already running (this also fires on resume/compact), do NOTHING.'; true" } ] }
+      { "hooks": [ { "type": "command", "command": "lab read 2>/dev/null; printf '%s\\n' '[lab] (Re-)arm your lab-watch Monitor now: Monitor(command: \"lab watch\", description: \"incoming lab messages\", persistent: true). Safe to run every time this fires (startup/resume/compact): lab watch holds a per-inbox lock, so a still-alive watcher makes the re-arm exit harmlessly, and a killed or superseded one gets taken over — re-arming is how a dead watcher is replaced. Do NOT skip it assuming one is alive; a SIGTERMed watcher leaves you with no delivery.'; true" } ] }
     ]
   }
 }
