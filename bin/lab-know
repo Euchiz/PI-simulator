@@ -10,12 +10,13 @@ Mirrors lab-data's proven choices: SQLite single file (~/lab/knowledge.db), FTS5
 write-mutex, rollback-journal (NFS-safe, no WAL), maintenance off the write path.
 Companion to (not a replacement for) `lab data` (find verified X) and git (code/artifacts).
 """
-import sqlite3, sys, os, re, argparse, datetime, hashlib
+import sqlite3, sys, os, re, argparse, datetime, hashlib, json
 
-LAB  = os.environ.get("LAB_HOME", os.path.expanduser("~/lab"))
-DB   = os.path.join(LAB, "knowledge.db")
-LOCK = os.path.join(LAB, ".knowledge.lock")
-WHO  = os.environ.get("LAB_FROM") or os.environ.get("LAB_SESSION") or "unknown"
+HOME   = os.path.expanduser("~")
+LAB    = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+DB     = os.path.join(LAB, "knowledge.db")
+LOCK   = os.path.join(LAB, ".knowledge.lock")
+ROSTER = os.path.join(LAB, ".roster.tsv")
 
 KINDS    = ("result", "insight", "decision", "settled-fact", "method-lesson")
 STATUSES = ("open", "holds", "null", "retracted", "superseded", "confounded")
@@ -29,6 +30,30 @@ def die(msg, code=1): print(f"lab claim: {msg}", file=sys.stderr); sys.exit(code
 def slug(s):
     s = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
     return s[:40] or "claim"
+
+def pkey(s):   # roster/name normalizer, matching lab-data
+    return re.sub(r"-+$", "", re.sub(r"^-+", "", re.sub(r"[^a-z0-9]+", "-", (s or "").lower())))[:50]
+
+def resolve_self():   # who is calling — mirror lab-data: state.json name, roster-by-jobid, then LAB_FROM
+    jd  = os.environ.get("CLAUDE_JOB_DIR", "")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID", "")
+    for c in [os.path.join(jd, "state.json") if jd else "",
+              os.path.join(os.path.dirname(jd), "state.json") if jd else "",
+              os.path.join(HOME, ".claude", "jobs", sid.split("-")[0], "state.json") if sid else ""]:
+        if c and os.path.isfile(c):
+            try:
+                n = pkey(json.load(open(c)).get("name", ""))
+                if n: return n
+            except Exception: pass
+    m = re.search(r"/jobs/([0-9a-f]+)", jd)   # roster fallback: jobid -> current agent name
+    if m:
+        try:
+            with open(ROSTER) as f:
+                for line in f:
+                    p = line.rstrip("\n").split("\t")
+                    if len(p) >= 2 and p[0] == m.group(1): return pkey(p[1])
+        except Exception: pass
+    return pkey(os.environ.get("LAB_FROM", ""))
 
 def mkid(con, statement, setting):
     base = slug(statement)
@@ -237,7 +262,7 @@ def cmd_add(a):
                        source,author,date,verified,verified_how,created,updated)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (cid, a.statement, a.detail, a.kind, a.status, a.setting, a.evidence, a.branch,
-                     a.source, a.author or WHO, a.date, 1 if a.verified else 0, a.verified_how, t, t))
+                     a.source, a.author or resolve_self() or "unknown", a.date, 1 if a.verified else 0, a.verified_how, t, t))
         if a.supersedes:
             get(con, a.supersedes)
             add_edge(con, cid, "supersedes", a.supersedes, "superseded on add")
@@ -280,12 +305,28 @@ def cmd_link(a):
     print(f"edge {a.src} -{a.rel}-> {a.dst}")
 
 # ---------- branches ----------
+def _status_counts(con, name):
+    return dict((x["status"], x["c"]) for x in con.execute(
+        "SELECT status,count(*) c FROM claim WHERE branch=? GROUP BY status", (name,)).fetchall())
+
+def _uncurated_branches(con):
+    # branch VALUES referenced by claims but with no branch record — so a branch that HAS claims is
+    # never invisible (registry rule: don't let coverage be silent). Returns [(name, counts_dict)].
+    rows = con.execute("""SELECT branch AS name, count(*) n FROM claim
+                          WHERE branch IS NOT NULL AND branch != ''
+                            AND branch NOT IN (SELECT name FROM branch)
+                          GROUP BY branch ORDER BY branch""").fetchall()
+    return [(r["name"], _status_counts(con, r["name"])) for r in rows]
+
 def cmd_branch(a):
     con = connect()
     if a.bcmd == "list":
         rows = con.execute("SELECT * FROM branch ORDER BY status, name").fetchall()
         for r in rows: print(f"  [{r['status']:<6}] {r['name']:<28} {(r['mechanism'] or '')[:60]}")
-        if not rows: print("  (no branches)")
+        unc = _uncurated_branches(con)
+        for name, cs in unc:
+            print(f"  [uncur.] {name:<28} (no branch record — {' '.join(f'{k}:{v}' for k,v in cs.items())})")
+        if not rows and not unc: print("  (no branches)")
     elif a.bcmd == "show":
         r = con.execute("SELECT * FROM branch WHERE name=?", (a.name,)).fetchone()
         if not r: die(f"no branch '{a.name}'")
@@ -304,19 +345,22 @@ def cmd_branch(a):
                              mechanism=COALESCE(excluded.mechanism,branch.mechanism),
                              end_condition=COALESCE(excluded.end_condition,branch.end_condition),
                              updated_by=excluded.updated_by, updated=excluded.updated""",
-                        (a.name, a.status or "open", a.mechanism, a.end_condition, WHO, t))
+                        (a.name, a.status or "open", a.mechanism, a.end_condition,
+                         resolve_self() or "unknown", t))
             con.commit()
         print(f"branch {a.name} set")
     elif a.bcmd == "map":
         rows = con.execute("SELECT * FROM branch ORDER BY status, name").fetchall()
         print("EXPLORATION MAP (branches × status):")
         for r in rows:
-            cs = dict((x["status"], x["c"]) for x in con.execute(
-                "SELECT status,count(*) c FROM claim WHERE branch=? GROUP BY status", (r["name"],)).fetchall())
-            counts = " ".join(f"{k}:{v}" for k, v in cs.items())
+            counts = " ".join(f"{k}:{v}" for k, v in _status_counts(con, r["name"]).items())
             print(f"  [{r['status']:<6}] {r['name']:<26} {(r['mechanism'] or '')[:50]}  {counts}")
             if r["end_condition"]: print(f"           end: {r['end_condition']}")
-        if not rows: print("  (no branches)")
+        unc = _uncurated_branches(con)
+        for name, cs in unc:
+            counts = " ".join(f"{k}:{v}" for k, v in cs.items())
+            print(f"  [uncur.] {name:<26} (referenced by claims, not yet curated)  {counts}")
+        if not rows and not unc: print("  (no branches)")
 
 def build_parser():
     p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
