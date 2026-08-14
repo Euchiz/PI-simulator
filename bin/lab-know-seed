@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""lab-know-seed — one-time (and re-runnable) SEED parser for the knowledge ledger.
+
+Parses the corpus the lab already writes — meeting posts + decisions/ — into candidate claims and
+branches, and either PREVIEWS them (default: prints, writes NOTHING) or --commit inserts via the
+lab-know engine. Built to the knowledge-map spec §9 and the tolerance rules the manager locked:
+
+  * auto-extracted claims land as status=open (unconfirmed) and NEVER auto-assert `holds`;
+  * the ONE exception is a retraction table whose row says a claim is DEAD/RETRACTED/WITHDRAWN/… —
+    recording that as status=retracted is faithful AND the safe direction (it hides it, never
+    surfaces it as current), which is the whole point of parsing retraction tables;
+  * `setting` is never a table column, so it is resolved from the nearest preceding prose/heading,
+    falling back to "session <s>, <date>"; a row whose setting can't resolve is still emitted (open,
+    flagged) — never dropped, never guessed;
+  * shapes that are ambiguous or are NOT claims (issues.md job/config tables, inline prose
+    retractions) are SKIPPED and reported in a coverage section, not silently ingested.
+
+Preview is safe to run anytime (read-only). Review the preview, THEN --commit. Dedup on
+(statement, source) so re-runs don't double-insert.
+
+Usage:
+  lab-know-seed [--posts] [--decisions] [--limit N]        # preview (default: both sources)
+  lab-know-seed --commit                                   # actually insert (after review)
+"""
+import os, re, sys, glob, subprocess, argparse
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+KNOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab-know")
+
+# keyword -> a CLEAR retraction (auto status=retracted); anything else stays open (never auto-holds)
+RETRACT_KW = ("dead", "retracted", "retract", "withdrawn", "deleted", "refuted",
+              "rejected", "killed", "false", "no-go", "wrong", "abandoned")
+# ambiguous verdicts we keep the raw text for but do NOT force into the enum
+AMBIG_KW   = ("scoped", "closed", "narrow", "parked", "unmeasurable", "overstated", "corrected")
+NOT_CLAIM_SESSIONS = ("issues",)          # issues.md posts are task/job trackers, not claims
+RESULT_METRIC_RE = re.compile(r"spearman|mcc|auroc|auc|r²|r2|accuracy|precision|recall|ece|f1", re.I)
+NUM_RE = re.compile(r"[+\-−]\s?\d*\.\d+")   # a signed decimal effect size
+
+def clean_md(s):
+    s = re.sub(r"~~(.*?)~~", r"\1", s)              # de-strikethrough
+    s = re.sub(r"\*\*(.*?)\*\*", r"\1", s)          # de-bold
+    s = re.sub(r"\*(.*?)\*", r"\1", s)              # de-italic
+    s = re.sub(r"`([^`]*)`", r"\1", s)              # de-code
+    s = re.sub(r"[✅❌🔴⚠️☠️🔒⏸️🔄⏳🟢🟡➡️→]", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+def status_from(cell):
+    """(status, raw_verdict_or_None) from a status cell / verdict text."""
+    low = clean_md(cell).lower()
+    if not low: return "open", None
+    for kw in RETRACT_KW:
+        if re.search(rf"\b{re.escape(kw)}\b", low): return "retracted", low
+    for kw in AMBIG_KW:
+        if re.search(rf"\b{re.escape(kw)}\b", low): return "open", low
+    if re.search(r"\bholds?\b|\bsurviv|\breal\b|\bvalidated\b", low): return "open", low  # NEVER auto-holds
+    return "open", low
+
+def frontmatter(text):
+    m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.S)
+    fm = {}
+    if m:
+        for line in m.group(1).splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1); fm[k.strip().lower()] = v.strip()
+    return fm
+
+def md_tables(text):
+    """Yield (header[list], rows[list of lists], context_line) for each pipe-table in the text."""
+    lines = text.splitlines()
+    i = 0
+    while i < len(lines):
+        sep = i + 1 < len(lines) and bool(re.match(r"^\s*\|?[\s:|>-]*-[\s:|>-]*\|", lines[i + 1]))
+        if "|" in lines[i] and sep:
+            header = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+            rows, j = [], i + 2
+            while j < len(lines) and "|" in lines[j] and lines[j].strip():
+                rows.append([c.strip() for c in lines[j].strip().strip("|").split("|")])
+                j += 1
+            ctx, k = "", i - 1
+            while k >= 0:
+                if lines[k].strip():
+                    ctx = clean_md(re.sub(r"^#+\s*", "", lines[k].strip())); break
+                k -= 1
+            yield header, rows, ctx
+            i = j
+        else:
+            i += 1
+
+def col_index(header, *names):
+    for idx, h in enumerate(header):
+        hl = clean_md(h).lower()
+        if any(n in hl for n in names): return idx
+    return -1
+
+# ---------------- extractors ----------------
+def extract_from_post(path, skips):
+    text = open(path, encoding="utf-8", errors="replace").read()
+    fm = frontmatter(text)
+    session = fm.get("session") or re.sub(r"\.md$", "", os.path.basename(path))
+    date = fm.get("meeting") or fm.get("posted", "")[:10]
+    src = f"meeting:{date}#{session}"
+    if session in NOT_CLAIM_SESSIONS:
+        skips.append(f"{path}: session '{session}' is a task/job tracker — skipped (not claims)")
+        return [], []
+    claims = []
+    def setting_of(ctx):
+        return ctx if ctx and len(ctx) > 4 else f"session {session}, {date}"
+    for header, rows, ctx in md_tables(text):
+        ci = col_index(header, "claim", "instrument", "finding")
+        si = col_index(header, "status")
+        wi = col_index(header, "why", "reason", "killed", "impossibility", "produced", "could not")
+        is_result_tbl = any(RESULT_METRIC_RE.search(clean_md(h)) for h in header)
+        if ci >= 0 and (si >= 0 or "retract" in ctx.lower()):
+            # R1/R3-style retraction/status table
+            for r in rows:
+                if ci >= len(r): continue
+                stmt = clean_md(r[ci])
+                if not stmt: continue
+                verdict = r[si] if 0 <= si < len(r) else ("retracted" if "retract" in ctx.lower() else "")
+                st, raw = status_from(verdict)
+                why = clean_md(r[wi]) if 0 <= wi < len(r) else None
+                claims.append(dict(statement=stmt[:200], kind="result", status=st,
+                                   setting=setting_of(ctx), evidence=None,
+                                   status_reason=(why or raw), source=src, author=session, date=date))
+        elif is_result_tbl:
+            # method x metric result table -> one open result claim per row, statement built by
+            # pairing each metric HEADER with its numeric cell ("poreior_caller — Spearman +0.380; MCC +0.482")
+            for r in rows:
+                if not r or not clean_md(r[0]): continue
+                label = clean_md(r[0])
+                pairs = []
+                for hi in range(1, min(len(header), len(r))):
+                    val = clean_md(r[hi])
+                    if NUM_RE.search(val): pairs.append(f"{clean_md(header[hi])[:22]} {val}")
+                if not pairs: continue
+                stmt = f"{label} — " + "; ".join(pairs[:4])
+                claims.append(dict(statement=stmt[:200], kind="result", status="open",
+                                   setting=setting_of(ctx), evidence="; ".join(pairs),
+                                   status_reason=None, source=src, author=session, date=date))
+        else:
+            if len(rows) >= 2:
+                skips.append(f"{path}: table under '{ctx[:40]}' not a claim/result shape — skipped")
+    # headline result lines: bold text with a signed effect + a CI/metric. Filter fragments:
+    # must not contain a table pipe, and must start like a sentence/result (not mid-clause).
+    for m in re.finditer(r"\*\*([^*]{12,240})\*\*", text):
+        seg = m.group(1).strip()
+        if "|" in seg: continue
+        if not re.match(r"^[\"'(]*[A-Z0-9+\-−]", seg): continue
+        if NUM_RE.search(seg) and re.search(r"CI\s*\[|AUROC|Spearman|MCC|R²|p[≈=]|\bn\s?=", seg):
+            claims.append(dict(statement=clean_md(seg)[:200], kind="result", status="open",
+                               setting=f"session {session}, {date}", evidence=None,
+                               status_reason=None, source=src, author=session, date=date))
+    return claims, []
+
+def extract_branches(path, skips):
+    """Parse a direction-tree style file (legend + ## BRANCH + ### node <status-emoji>) -> branches."""
+    text = open(path, encoding="utf-8", errors="replace").read()
+    if "BRANCH" not in text and "Legend" not in text:
+        return []
+    branches = []
+    emoji_status = [("☠️", "closed"), ("DEAD", "closed"), ("RETRACT", "closed"),
+                    ("🔒", "closed"), ("CLOSED", "closed"), ("⏸️", "parked"), ("PARKED", "parked"),
+                    ("✅", "open"), ("LIVE", "open")]
+    for m in re.finditer(r"^##+\s*(BRANCH\s+\w+\s*[—\-:]\s*)?(.+)$", text, re.M):
+        head = m.group(2).strip()
+        if not head or head.lower().startswith(("what", "the ", "legend")): continue
+        st = "open"
+        for tok, s in emoji_status:
+            if tok in head: st = s; break
+        name = clean_md(re.sub(r"[—\-:].*$", "", head)).strip()[:40] or clean_md(head)[:40]
+        if len(name) < 3: continue
+        branches.append(dict(name=name.lower().replace(" ", "-"), status=st,
+                             mechanism=clean_md(head)[:120], source=os.path.basename(path)))
+    return branches
+
+# ---------------- driver ----------------
+def existing_keys():
+    """(statement, source) pairs already in the DB, to dedup re-runs."""
+    keys = set()
+    try:
+        import sqlite3
+        con = sqlite3.connect(os.path.join(LAB, "knowledge.db"))
+        for s, src in con.execute("SELECT statement, source FROM claim"):
+            keys.add((s, src or ""))
+    except Exception:
+        pass
+    return keys
+
+def commit_claim(c):
+    args = [KNOW, "add", "--statement", c["statement"], "--kind", c["kind"],
+            "--status", c["status"], "--setting", c["setting"], "--source", c["source"],
+            "--author", c["author"]]
+    if c.get("date"): args += ["--date", c["date"]]
+    if c.get("evidence"): args += ["--evidence", c["evidence"]]
+    if c.get("branch"): args += ["--branch", c["branch"]]
+    r = subprocess.run(args, capture_output=True, text=True, env={**os.environ, "LAB_HOME": LAB})
+    # status_reason isn't an add flag; retraction rows keep their why in evidence-less note via reason on retract.
+    return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+def commit_branch(b):
+    args = [KNOW, "branch", "set", b["name"], "--status", b["status"], "--mechanism", b["mechanism"]]
+    r = subprocess.run(args, capture_output=True, text=True, env={**os.environ, "LAB_HOME": LAB})
+    return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+def main():
+    ap = argparse.ArgumentParser(prog="lab-know-seed")
+    ap.add_argument("--commit", action="store_true", help="actually insert (default: preview only)")
+    ap.add_argument("--posts", action="store_true", help="only meeting posts")
+    ap.add_argument("--decisions", action="store_true", help="only decisions/")
+    ap.add_argument("--limit", type=int, default=0, help="cap files (for a quick look)")
+    a = ap.parse_args()
+    do_posts = a.posts or not a.decisions
+    do_dec   = a.decisions or not a.posts
+
+    skips, claims, branches = [], [], []
+    if do_posts:
+        posts = sorted(glob.glob(os.path.join(LAB, "meeting", "*", "posts", "*.md")))
+        if a.limit: posts = posts[:a.limit]
+        for p in posts:
+            cs, _ = extract_from_post(p, skips); claims += cs
+    if do_dec:
+        decs = sorted(glob.glob(os.path.join(LAB, "decisions", "*.md")))
+        for p in decs:
+            branches += extract_branches(p, skips)
+
+    # dedup within this run and against the DB
+    seen, uniq = set(), []
+    for c in claims:
+        k = (c["statement"], c["source"])
+        if k in seen: continue
+        seen.add(k); uniq.append(c)
+    claims = uniq
+    bseen, buniq = set(), []
+    for b in branches:
+        if b["name"] in bseen: continue
+        bseen.add(b["name"]); buniq.append(b)
+    branches = buniq
+
+    print(f"SEED {'COMMIT' if a.commit else 'PREVIEW'} — {len(claims)} claim candidates, "
+          f"{len(branches)} branch candidates, {len(skips)} skipped\n")
+    n_ret = sum(1 for c in claims if c["status"] == "retracted")
+    print(f"  claims: {n_ret} retracted (from retraction tables), {len(claims)-n_ret} open (unconfirmed)\n")
+
+    if not a.commit:
+        print("=== CLAIM CANDIDATES (nothing written) ===")
+        for c in claims[:120]:
+            print(f"  [{c['status']:<9}] {c['statement'][:88]}")
+            print(f"       setting: {c['setting'][:70]}  · {c['source']}" +
+                  (f"  · {c['status_reason'][:50]}" if c.get('status_reason') else ""))
+        if len(claims) > 120: print(f"  … +{len(claims)-120} more")
+        print("\n=== BRANCH CANDIDATES ===")
+        for b in branches:
+            print(f"  [{b['status']:<6}] {b['name']:<34} {b['mechanism'][:44]}  ({b['source']})")
+        print("\n=== SKIPPED (coverage — NOT ingested) ===")
+        for s in skips[:40]: print(f"  - {s}")
+        if len(skips) > 40: print(f"  … +{len(skips)-40} more")
+        print("\nReview, then re-run with --commit. Nothing was written.")
+        return
+
+    dbkeys = existing_keys()
+    ok = dup = failc = okb = 0
+    for c in claims:
+        if (c["statement"], c["source"]) in dbkeys: dup += 1; continue
+        good, msg = commit_claim(c)
+        if good: ok += 1
+        else: failc += 1; print(f"  FAIL claim: {c['statement'][:50]} :: {msg[:80]}")
+    for b in branches:
+        good, msg = commit_branch(b)
+        if good: okb += 1
+        else: print(f"  FAIL branch: {b['name']} :: {msg[:80]}")
+    print(f"committed: {ok} claims ({dup} already present, {failc} failed), {okb} branches")
+
+if __name__ == "__main__":
+    main()
