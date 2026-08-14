@@ -1,0 +1,258 @@
+#!/usr/bin/env python3
+"""lab-tool — the lab software/tool registry. Pointers + how-to-run, never a disk scan.
+
+Invoked as `lab tool <cmd>` (the bash `lab` CLI execs this). SQLite at $LAB_HOME/tools.db.
+The point: an agent finds the RIGHT tool — its path, exact invocation, env/module prereqs,
+and known gotchas — from an index, instead of walking NFS every time (which the compute-
+etiquette rules forbid: a broad `find` once ran 25.9h and degraded the node for everyone).
+
+Sibling of `lab data` (datasets) — same NFS-safe design: writes take an flock mutex and use
+rollback-journal (NOT WAL); reads are live + FTS5; render/export/audit are cron/on-demand,
+never on the write path. `audit` stat()s each path (never walks a tree).
+"""
+import sqlite3, sys, os, re, csv, json, fcntl, argparse, datetime
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+DB   = os.path.join(LAB, "tools.db")
+LOCK = os.path.join(LAB, ".tools.lock")
+MD   = os.path.join(LAB, "TOOLS.md")
+CSVF = os.path.join(LAB, "tools.csv")
+
+# columns the caller can set (order = display order); required set enforced in add()
+COLS = ["id","name","kind","path","invocation","env","description","example","tags",
+        "gotchas","version","verified","verified_how","added_by","updated_by","created","updated"]
+# free-text columns the caller may set on add/update (everything but id + bookkeeping)
+WRITE_COLS = ["name","kind","path","invocation","env","description","example","tags",
+              "gotchas","version","verified_how"]
+
+def now():  return datetime.datetime.now().isoformat(timespec="seconds")
+def pkey(s):
+    return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+
+def resolve_self():
+    jd  = os.environ.get("CLAUDE_JOB_DIR","")
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID","")
+    cands = [os.path.join(jd,"state.json") if jd else "",
+             os.path.join(os.path.dirname(jd),"state.json") if jd else "",
+             os.path.join(HOME,".claude","jobs",sid.split("-")[0],"state.json") if sid else ""]
+    for c in cands:
+        if c and os.path.isfile(c):
+            try: return pkey(json.load(open(c)).get("name",""))
+            except Exception: pass
+    return pkey(os.environ.get("LAB_FROM",""))
+
+def connect():
+    con = sqlite3.connect(DB, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=DELETE")   # rollback journal — NFS-safe (no WAL/-shm mmap)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(con)
+    return con
+
+FTS_TRIGGERS = """
+    DROP TRIGGER IF EXISTS tools_ai; DROP TRIGGER IF EXISTS tools_ad; DROP TRIGGER IF EXISTS tools_au;
+    DROP TABLE IF EXISTS tools_fts;
+    CREATE VIRTUAL TABLE tools_fts USING fts5(
+      id, name, kind, path, invocation, env, description, tags, gotchas,
+      content='tools', content_rowid='rowid');
+    CREATE TRIGGER tools_ai AFTER INSERT ON tools BEGIN
+      INSERT INTO tools_fts(rowid,id,name,kind,path,invocation,env,description,tags,gotchas)
+      VALUES (new.rowid,new.id,new.name,new.kind,new.path,new.invocation,new.env,new.description,new.tags,new.gotchas);
+    END;
+    CREATE TRIGGER tools_ad AFTER DELETE ON tools BEGIN
+      INSERT INTO tools_fts(tools_fts,rowid,id,name,kind,path,invocation,env,description,tags,gotchas)
+      VALUES ('delete',old.rowid,old.id,old.name,old.kind,old.path,old.invocation,old.env,old.description,old.tags,old.gotchas);
+    END;
+    CREATE TRIGGER tools_au AFTER UPDATE ON tools BEGIN
+      INSERT INTO tools_fts(tools_fts,rowid,id,name,kind,path,invocation,env,description,tags,gotchas)
+      VALUES ('delete',old.rowid,old.id,old.name,old.kind,old.path,old.invocation,old.env,old.description,old.tags,old.gotchas);
+      INSERT INTO tools_fts(rowid,id,name,kind,path,invocation,env,description,tags,gotchas)
+      VALUES (new.rowid,new.id,new.name,new.kind,new.path,new.invocation,new.env,new.description,new.tags,new.gotchas);
+    END;
+    INSERT INTO tools_fts(rowid,id,name,kind,path,invocation,env,description,tags,gotchas)
+      SELECT rowid,id,name,kind,path,invocation,env,description,tags,gotchas FROM tools;
+"""
+
+def ensure_schema(con):
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS tools(
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT, path TEXT,
+      invocation TEXT NOT NULL, env TEXT, description TEXT NOT NULL, example TEXT,
+      tags TEXT, gotchas TEXT, version TEXT,
+      verified INTEGER DEFAULT 0, verified_how TEXT,
+      added_by TEXT, updated_by TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_tools_tags ON tools(tags);
+    CREATE INDEX IF NOT EXISTS ix_tools_kind ON tools(kind);
+    """)
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE name='tools_fts'").fetchone():
+        con.executescript(FTS_TRIGGERS)
+    con.commit()
+
+class WriteLock:
+    def __enter__(self):
+        os.makedirs(LAB, exist_ok=True)
+        self.f = open(LOCK,"w"); fcntl.flock(self.f, fcntl.LOCK_EX); return self
+    def __exit__(self,*a):
+        fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+
+def die(msg, code=1): print(f"lab tool: {msg}", file=sys.stderr); sys.exit(code)
+
+# ---------- reads (live, no lock) ----------
+def fts(con, q):
+    terms = " OR ".join('"%s"'%t for t in re.findall(r"[A-Za-z0-9_./+-]+", q))
+    if not terms: return []
+    try:
+        return con.execute("SELECT t.* FROM tools_fts f JOIN tools t ON t.rowid=f.rowid "
+                           "WHERE tools_fts MATCH ? ORDER BY rank", (terms,)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+def cmd_find(a):
+    con = connect()
+    rows = fts(con, a.query)
+    if not rows:
+        print(f"no tool matches '{a.query}'. If you locate/install one, register it: `lab tool add`.")
+        sys.exit(1)   # non-zero so a script won't assume a tool exists
+    for r in rows:
+        vv = "✓" if r["verified"] else "·"
+        print(f"[{vv}] {r['id']:<20} ({r['kind'] or '?'})  {(r['description'] or '')[:62]}")
+        loc = f"   @ {r['path']}" if r["path"] else ""
+        print(f"      run: {(r['invocation'] or '')[:80]}{loc}")
+        if r["env"]:     print(f"      env: {(r['env'])[:88]}")
+        if r["gotchas"]: print(f"      ⚠  {(r['gotchas'])[:88]}")
+
+def cmd_show(a):
+    con = connect()
+    r = con.execute("SELECT * FROM tools WHERE id=?", (pkey(a.id),)).fetchone()
+    if not r: die(f"no tool id '{a.id}'", 3)
+    for c in COLS:
+        if r[c] not in (None, ""): print(f"  {c:<12}: {r[c]}")
+
+def cmd_list(a):
+    con = connect()
+    sql = "SELECT * FROM tools"; where=[]; args=[]
+    if a.tag:  where.append("lower(tags) LIKE ?"); args.append(f"%{a.tag.lower()}%")
+    if a.kind: where.append("lower(kind) = ?");    args.append(a.kind.lower())
+    if where: sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id"
+    rows = con.execute(sql, args).fetchall()
+    print(f"{len(rows)} tool(s):")
+    for r in rows:
+        vv = "✓" if r["verified"] else "·"
+        print(f"[{vv}] {r['id']:<22} {(r['kind'] or ''):<10} {(r['description'] or '')[:52]:<52} @ {(r['path'] or '')[:34]}")
+
+# ---------- writes (flock + txn; NOT auto-render) ----------
+def cmd_add(a):
+    vals = {c: getattr(a, c, None) for c in WRITE_COLS}
+    vals["id"] = pkey(a.id)
+    for req in ("id","name","invocation","description"):
+        if not (vals.get(req) or (req=="id" and vals["id"])):
+            die(f"--{req} is required", 2)
+    who = a.by or resolve_self() or "unknown"
+    vals["added_by"]=who; vals["updated_by"]=who; vals["created"]=now(); vals["updated"]=now()
+    vals["verified"] = 1 if a.verified else 0
+    with WriteLock():
+        con = connect()
+        if con.execute("SELECT 1 FROM tools WHERE id=?", (vals["id"],)).fetchone():
+            die(f"id '{vals['id']}' already exists — use `lab tool update {vals['id']}`.", 4)
+        cols=[c for c in COLS]
+        con.execute(f"INSERT INTO tools ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
+                    [vals.get(c) for c in cols])
+        con.commit()
+    print(f"lab tool: added '{vals['id']}'  (by {who})")
+
+def cmd_update(a):
+    idv = pkey(a.id)
+    sets = {}
+    for c in WRITE_COLS:
+        v = getattr(a, c, None)
+        if v is not None: sets[c] = v
+    if a.verified: sets["verified"] = 1
+    if not sets: die("nothing to update — pass at least one field", 2)
+    who = a.by or resolve_self() or "unknown"
+    sets["updated_by"]=who; sets["updated"]=now()
+    with WriteLock():
+        con = connect()
+        if not con.execute("SELECT 1 FROM tools WHERE id=?", (idv,)).fetchone():
+            die(f"no tool id '{idv}' — use `lab tool add` to create it.", 3)
+        con.execute(f"UPDATE tools SET {','.join(k+'=?' for k in sets)} WHERE id=?",
+                    list(sets.values())+[idv]); con.commit()
+    print(f"lab tool: updated '{idv}'  (by {who})")
+
+def cmd_mv(a):
+    idv = pkey(a.id)
+    who = a.by or resolve_self() or "unknown"
+    with WriteLock():
+        con = connect()
+        r = con.execute("SELECT path FROM tools WHERE id=?", (idv,)).fetchone()
+        if not r: die(f"no tool id '{idv}'", 3)
+        old = r["path"]
+        con.execute("UPDATE tools SET path=?, updated_by=?, updated=? WHERE id=?",
+                    (a.path, who, now(), idv)); con.commit()
+    print(f"lab tool: moved '{idv}'  {old}  ->  {a.path}")
+
+# ---------- snapshot / maintenance (cron + on-demand; NOT on write path) ----------
+def cmd_render(a):
+    con = connect(); rows = con.execute("SELECT * FROM tools ORDER BY id").fetchall()
+    with open(MD,"w") as f:
+        f.write("# Lab tools — human-readable snapshot\n\n")
+        f.write(f"_Generated {now()} · {len(rows)} tools · **for reading only** — stale snapshot; "
+                "query live with `lab tool find/list/show`._\n\n")
+        f.write("| id | kind | description | run | path | env | gotchas | ok? | by |\n"
+                "|---|---|---|---|---|---|---|---|---|\n")
+        for r in rows:
+            ok = "✓" if r["verified"] else ""
+            f.write("| "+" | ".join((x or "").replace("|","\\|") for x in [
+                r["id"], r["kind"], r["description"], r["invocation"], r["path"],
+                r["env"], r["gotchas"], ok, r["updated_by"]])+" |\n")
+    print(f"lab tool: wrote {MD} ({len(rows)} rows)")
+
+def cmd_export(a):
+    con = connect()
+    with open(CSVF,"w",newline="") as f:
+        w = csv.writer(f); w.writerow(COLS)
+        for r in con.execute(f"SELECT {','.join(COLS)} FROM tools ORDER BY id"):
+            w.writerow([r[c] for c in COLS])
+    print(f"lab tool: wrote {CSVF}")
+
+def cmd_audit(a):
+    con = connect(); rows = con.execute("SELECT id,path,invocation,verified,updated_by FROM tools").fetchall()
+    # stat() only — never walks a tree. A path may be a binary, a script, an env prefix, or a repo dir.
+    missing = [r for r in rows if r["path"] and not os.path.exists(r["path"])]
+    unver   = [r for r in rows if not r["verified"]]
+    print(f"audit: {len(rows)} tools · {len(missing)} MISSING paths · {len(unver)} unverified")
+    for r in missing: print(f"  MISSING  {r['id']:<22} {r['path']}   (by {r['updated_by']})")
+    for r in unver:   print(f"  unverif  {r['id']:<22} (by {r['updated_by']})")
+    sys.exit(2 if missing else 0)
+
+def cmd_maint(a):
+    print(f"=== lab tool maint {datetime.datetime.now():%F %T} ===")
+    cmd_render(a); cmd_export(a)
+    try: cmd_audit(a)
+    except SystemExit as e:
+        if e.code not in (0, 2): raise
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="lab tool"); sub = p.add_subparsers(dest="cmd", required=True)
+    def add_write(sp):
+        for c in WRITE_COLS: sp.add_argument("--"+c.replace("_","-"), dest=c)
+        sp.add_argument("--desc", dest="description")   # convenient alias for --description
+        sp.add_argument("--verified", action="store_true")
+        sp.add_argument("--by", help="override contact/updated_by (default: this session)")
+    s=sub.add_parser("find"); s.add_argument("query"); s.set_defaults(fn=cmd_find)
+    s=sub.add_parser("show"); s.add_argument("id");    s.set_defaults(fn=cmd_show)
+    s=sub.add_parser("list"); s.add_argument("--tag"); s.add_argument("--kind"); s.set_defaults(fn=cmd_list)
+    s=sub.add_parser("add");  s.add_argument("--id", required=True); add_write(s); s.set_defaults(fn=cmd_add)
+    s=sub.add_parser("update"); s.add_argument("id"); add_write(s); s.set_defaults(fn=cmd_update)
+    s=sub.add_parser("mv"); s.add_argument("id"); s.add_argument("path"); s.add_argument("--by"); s.set_defaults(fn=cmd_mv)
+    s=sub.add_parser("render"); s.set_defaults(fn=cmd_render)
+    s=sub.add_parser("export"); s.set_defaults(fn=cmd_export)
+    s=sub.add_parser("audit");  s.set_defaults(fn=cmd_audit)
+    s=sub.add_parser("maint");  s.set_defaults(fn=cmd_maint)
+    return p
+
+if __name__ == "__main__":
+    args = build_parser().parse_args()   # --desc and --description share dest="description"
+    args.fn(args)
