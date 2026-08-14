@@ -177,6 +177,10 @@ def cmd_find(a):
         print("(no matching claims)"); return
     current = [i for i in ids if get(con, i)["status"] not in DEAD]
     dead    = [i for i in ids if get(con, i)["status"] in DEAD]
+    # within CURRENT, read confirmed facts first: holds/settled above open (stable, keeps FTS rank
+    # within each group) so a fresh seed's many unconfirmed [OPEN] rows don't bury the verified ones.
+    crank = {"holds": 0, "null": 1, "confounded": 2, "open": 3}
+    current.sort(key=lambda i: crank.get(get(con, i)["status"], 3))
     print(f"CURRENT claims matching '{a.query}':")
     if current:
         for i in current: print(fmt_hit(con, get(con, i)))

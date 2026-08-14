@@ -110,15 +110,22 @@ def extract_from_post(path, skips):
         ci = col_index(header, "claim", "instrument", "finding")
         si = col_index(header, "status")
         wi = col_index(header, "why", "reason", "killed", "impossibility", "produced", "could not")
+        killed_col = col_index(header, "killed")          # a 'killed by' column => the table IS retractions
+        # retraction context: the heading/prose above says these claims were retracted/killed/died/withdrawn.
+        # "died"/"withdrawn" (ont-fm's variant) must count, not just the literal word "retract".
+        ctx_retract = bool(re.search(r"retract|\bkill|\bdied\b|withdrawn|refuted|casualt|\bdead\b", ctx.lower()))
         is_result_tbl = any(RESULT_METRIC_RE.search(clean_md(h)) for h in header)
-        if ci >= 0 and (si >= 0 or "retract" in ctx.lower()):
-            # R1/R3-style retraction/status table
+        if ci >= 0 and (si >= 0 or killed_col >= 0 or ctx_retract):
+            # retraction / status table family: claim|status|why (R1), claim|status (R2, mixed rows),
+            # claim|killed-by (R3), or any claim table under a retraction heading.
             for r in rows:
                 if ci >= len(r): continue
                 stmt = clean_md(r[ci])
                 if not stmt: continue
-                verdict = r[si] if 0 <= si < len(r) else ("retracted" if "retract" in ctx.lower() else "")
-                st, raw = status_from(verdict)
+                if 0 <= si < len(r):
+                    st, raw = status_from(r[si])          # per-row status (handles mixed holds/retracted audits)
+                else:
+                    st, raw = "retracted", None            # no status col but killed-by/retract context => all retracted
                 why = clean_md(r[wi]) if 0 <= wi < len(r) else None
                 claims.append(dict(statement=stmt[:200], kind="result", status=st,
                                    setting=setting_of(ctx), evidence=None,
