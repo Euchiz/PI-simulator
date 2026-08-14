@@ -39,9 +39,11 @@ ok "find on miss returns rc1"
 K update sm --version "2.2" >/dev/null
 K show sm | grep -q "2.2" || fail "update must persist"
 K mv sm /no/such/path >/dev/null
-K audit 2>/dev/null; rc=$?
+# capture first: audit exits 2 by design when a path is missing, and `audit | grep` under
+# `set -o pipefail` would return that 2 even when grep matches — a pipefail trap, not a bug.
+aud="$(K audit 2>/dev/null)"; rc=$?
 [ "$rc" = 2 ] || fail "audit must exit 2 when a path is missing (got $rc)"
-K audit 2>/dev/null | grep -q "MISSING" || fail "audit must report the missing path"
+printf '%s\n' "$aud" | grep -q "MISSING" || fail "audit must report the missing path"
 ok "update + mv persist; audit flags a missing path (rc2)"
 
 echo "ALL TESTS PASSED"
