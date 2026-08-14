@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+# lab-scanwatch — cron watchdog for FORBIDDEN broad NFS scans (compute-etiquette rule #1: the
+# 25.9h find that storms the RPC table and degrades the node for everyone). A SCOPED scan finishes
+# fast; only broad ones run long enough to saturate NFS — so this keys on the HARM (long-running),
+# not the command shape. Flags find/du/grep -r/rg/locate/updatedb whose argv target OR resolved
+# cwd sits on a big NFS mount (isilon/home/scr1/cm-shared) and has run > LAB_SCAN_LONG_SEC.
+#
+#   live-session scan  -> WARN the owning agent (naming the cwd/mount, so it's actionable)
+#   orphaned/detached  -> ALERT the technician to VERIFY then kill by hand (per Zac: no auto-kill;
+#                         PPID=1 also matches deliberate nohup/setsid, so a human confirms first)
+#
+# Cheap when nothing's scanning (one ps). Rate-limited per pid. Everything logged. DRY mode prints.
+# Env (lab.env): LAB_SCAN_LONG_SEC (default 90), LAB_SCAN_COOLDOWN_MIN (30).
+# Test: LAB_SCANWATCH_DRYRUN=1 LAB_SCAN_LONG_SEC=5 lab-scanwatch  (prints, never sends).
+set -uo pipefail
+LAB="${LAB_HOME:-$HOME/lab}"
+[ -f "$LAB/lab.env" ] && { set -a; . "$LAB/lab.env" 2>/dev/null || true; set +a; }
+LONG_SEC="${LAB_SCAN_LONG_SEC:-90}"
+DRY="${LAB_SCANWATCH_DRYRUN:-0}"
+ROSTER="$LAB/.roster.tsv"
+TECH="${LAB_TECHNICIAN:-technician}"
+DIR="$LAB/.scanwatch"; mkdir -p "$DIR"
+LOG="$DIR/scanwatch.log"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+ts(){ date -u +%Y-%m-%dT%H:%M:%SZ; }
+log(){ echo "$(ts) $*" >> "$LOG"; }
+
+# big NFS mounts where a broad scan storms the RPC table (the forbidden roots)
+NFS_RE='^/(mnt/isilon|home|scr1|cm/shared)(/|$)'
+
+# live session compute traces up to a Claude session backend (comm "2.1.*"/"claude");
+# an orphaned/detached scan reparents to init/systemd and has no such ancestor.
+traces_to_backend() {
+  local q="$1" name hops=0
+  while [ "$hops" -lt 16 ] && [ -n "$q" ] && [ "$q" != 1 ] && [ -r "/proc/$q/status" ]; do
+    name=$(awk '/^Name:/{print $2; exit}' "/proc/$q/status" 2>/dev/null)
+    case "$name" in 2.1.*|claude) return 0;; esac
+    q=$(awk '/^PPid:/{print $2; exit}' "/proc/$q/status" 2>/dev/null)
+    hops=$((hops+1))
+  done
+  return 1
+}
+
+# clean stamps for pids that are gone (avoid unbounded growth / stale suppression on pid reuse)
+for s in "$DIR"/pid-*.seen; do [ -e "$s" ] || continue; p=${s##*/pid-}; p=${p%.seen}; [ -d "/proc/$p" ] || rm -f "$s"; done
+
+while read -r pid etimes comm; do
+  [ -n "$pid" ] || continue
+  [ "${etimes:-0}" -ge "$LONG_SEC" ] 2>/dev/null || continue     # long-running only
+  # is it a scan tool? grep only counts when recursive (-r/-R)
+  args="$( { tr '\0' ' ' < "/proc/$pid/cmdline"; } 2>/dev/null)"
+  case "$comm" in
+    find|du|locate|mlocate|updatedb|rg) : ;;
+    grep|egrep|fgrep|ggrep) printf ' %s ' "$args" | grep -qE ' -[A-Za-z]*[rR]' || continue ;;
+    *) continue ;;
+  esac
+  # scope = argv path tokens + resolved cwd (rg/grep -r recurse from cwd, often no mount in argv)
+  cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null)"
+  hit=""
+  printf '%s\n' "$cwd" | grep -qE "$NFS_RE" && hit="$cwd"
+  if [ -z "$hit" ]; then
+    for tok in $args; do case "$tok" in /*) printf '%s\n' "$tok" | grep -qE "$NFS_RE" && { hit="$tok"; break; };; esac; done
+  fi
+  [ -n "$hit" ] || continue                                       # only scans hitting a big NFS mount
+  # rate-limit: one alert per pid
+  stamp="$DIR/pid-$pid.seen"; [ -e "$stamp" ] && continue
+  mount="$(printf '%s' "$hit" | grep -oE '^/(mnt/isilon(/wang_lab)?|home|scr1|cm/shared)')"
+  short_args="$(printf '%s' "$args" | cut -c1-160)"
+
+  if traces_to_backend "$pid"; then
+    # LIVE session -> warn the owning agent
+    job=$( { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -oE 'CLAUDE_JOB_DIR=.*/jobs/[0-9a-f]+' | grep -oE '[0-9a-f]+$' | head -1)
+    agent=$(awk -v j="$job" -F'\t' '$1==j{print $2}' "$ROSTER" 2>/dev/null)
+    subj="⚠ long-running scan on $mount (${etimes}s) — scope it or move it off the login node"
+    body="Automated node-health warning (technician scan-watch). Your session is running a broad scan on the shared NFS mount $mount — a scoped scan finishes in seconds, so ${etimes}s means it's walking a large tree and storming the RPC table for everyone (the compute rule that exists because a find like this once ran 25.9h).
+  pid=$pid  $comm  cwd=$cwd
+  $short_args
+Please Ctrl-C / kill it and either scope it to the narrowest subdir with -maxdepth, or run it on a SLURM node writing to a manifest. If it's genuinely needed and bounded, ignore this."
+    if [ "$DRY" = 1 ]; then echo "WARN-OWNER ${agent:-<no roster>} (job ${job:-?}): $comm ${etimes}s on $mount cwd=$cwd"
+    elif [ -n "$agent" ]; then
+      LAB_FROM="scanwatch" "$SELF/lab" send --force "$agent" "$subj" "$body" >>"$LOG" 2>&1
+      touch "$stamp"; log "WARNED $agent (job $job): long scan pid=$pid $comm ${etimes}s on $mount cwd=$cwd args=[$short_args]"
+    else
+      # live backend but unattributable -> alert technician
+      [ "$DRY" = 1 ] || { LAB_FROM="scanwatch" "$SELF/lab" send --force "$TECH" "⚠ long scan on $mount, live but unattributable — check" "pid=$pid $comm ${etimes}s cwd=$cwd  $short_args" >>"$LOG" 2>&1; touch "$stamp"; }
+      log "ALERT-TECH (live, unattributable) pid=$pid $comm ${etimes}s on $mount cwd=$cwd"
+    fi
+  else
+    # ORPHANED / DETACHED -> alert technician to VERIFY then kill (no auto-kill; PPID=1 also = nohup/setsid)
+    ppid=$(awk '/^PPid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
+    sid=$(awk '{print $6}' "/proc/$pid/stat" 2>/dev/null)
+    start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')"
+    subj="🛑 VERIFY+KILL? orphaned/detached scan on $mount running ${etimes}s (no live session)"
+    body="Automated node-health alert (scan-watch). A long-running scan on the shared NFS mount $mount does NOT trace to any live session backend — so it's orphaned (session exited: the class that caused the 25.9h incident) OR deliberately detached (nohup/setsid). Per policy this does NOT auto-kill — verify which, then kill by hand if orphaned:
+  pid=$pid  $comm  ${etimes}s  ppid=$ppid  sid=$sid  started=$start
+  cwd=$cwd
+  $short_args
+Verify: is sid $sid a dead session (nothing else alive in it) and is this on a forbidden root? If orphaned -> kill $pid (record argv/cwd/runtime/mount to BOARD + tell the owner if identifiable). If it's a deliberate detached job someone wanted -> leave it."
+    if [ "$DRY" = 1 ]; then echo "ALERT-TECH orphaned/detached: pid=$pid $comm ${etimes}s on $mount ppid=$ppid sid=$sid cwd=$cwd"
+    else
+      LAB_FROM="scanwatch" "$SELF/lab" send --force "$TECH" "$subj" "$body" >>"$LOG" 2>&1
+      touch "$stamp"; log "ALERT-TECH orphaned/detached scan pid=$pid $comm ${etimes}s on $mount ppid=$ppid sid=$sid cwd=$cwd args=[$short_args]"
+    fi
+  fi
+done < <(ps -eo pid=,etimes=,comm= 2>/dev/null)
