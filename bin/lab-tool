@@ -260,6 +260,8 @@ def cmd_audit(a):
     print(f"audit: {len(rows)} tools · {len(missing)} MISSING paths · {len(unver)} unverified · "
           f"{len(stale)} stale-verify (>{VERIFY_STALE_DAYS}d)")
     for r in missing: print(f"  MISSING  {r['id']:<22} {r['path']}   (by {r['updated_by']})")
+    if missing: print("  ↳ a MISSING path is often ALSO hard-coded in job scripts/pipelines — check anything "
+                      "that references it, not just the registry record (this has caught a queued job before it burned compute).")
     for r in stale:   print(f"  STALE    {r['id']:<22} verified {r['verified_at'][:10] if r['verified_at'] else '?'} "
                             f"by {r['verified_by'] or '?'} — re-verify the path still resolves")
     for r in unver:   print(f"  unverif  {r['id']:<22} (by {r['updated_by']})")
