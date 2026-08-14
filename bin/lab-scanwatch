@@ -5,9 +5,11 @@
 # not the command shape. Flags find/du/grep -r/rg/locate/updatedb whose argv target OR resolved
 # cwd sits on a big NFS mount (isilon/home/scr1/cm-shared) and has run > LAB_SCAN_LONG_SEC.
 #
-#   live-session scan  -> WARN the owning agent (naming the cwd/mount, so it's actionable)
-#   orphaned/detached  -> ALERT the technician to VERIFY then kill by hand (per Zac: no auto-kill;
-#                         PPID=1 also matches deliberate nohup/setsid, so a human confirms first)
+#   live-owner scan    -> WARN the owning agent (attributed via CLAUDE_JOB_DIR from the process, so it
+#                         works even when the scan detached from its tool-call shell; owner-liveness
+#                         from the agent's lab-watch lock — a detached scan is owned, not orphaned)
+#   no live owner      -> ALERT the technician to VERIFY then kill by hand (per Zac: no auto-kill;
+#                         orphaned session, or a deliberate nohup/setsid, so a human confirms first)
 #
 # Cheap when nothing's scanning (one ps). Rate-limited per pid. Everything logged. DRY mode prints.
 # Env (lab.env): LAB_SCAN_LONG_SEC (default 90), LAB_SCAN_COOLDOWN_MIN (30).
@@ -28,17 +30,25 @@ log(){ echo "$(ts) $*" >> "$LOG"; }
 # big NFS mounts where a broad scan storms the RPC table (the forbidden roots)
 NFS_RE='^/(mnt/isilon|home|scr1|cm/shared)(/|$)'
 
-# live session compute traces up to a Claude session backend (comm "2.1.*"/"claude");
-# an orphaned/detached scan reparents to init/systemd and has no such ancestor.
-traces_to_backend() {
-  local q="$1" name hops=0
-  while [ "$hops" -lt 16 ] && [ -n "$q" ] && [ "$q" != 1 ] && [ -r "/proc/$q/status" ]; do
-    name=$(awk '/^Name:/{print $2; exit}' "/proc/$q/status" 2>/dev/null)
-    case "$name" in 2.1.*|claude) return 0;; esac
-    q=$(awk '/^PPid:/{print $2; exit}' "/proc/$q/status" 2>/dev/null)
-    hops=$((hops+1))
-  done
-  return 1
+# Identify the OWNER of a scan from the PROCESS itself, not its parent chain: an agent's backgrounded
+# scan outlives the tool-call shell that launched it and reparents to init, so it never traces to a
+# live backend even though a live agent owns it. But it still carries CLAUDE_JOB_DIR in its environ
+# (cwd as fallback) -> job-id -> roster name. 'detached' is NOT 'ownerless'. (ont-fm 2026-08-14)
+owner_of() {   # echoes "<job>\t<agent>" (agent may be empty if job not in roster); rc1 if no job
+  local pid="$1" job
+  job=$( { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -oE 'CLAUDE_JOB_DIR=.*/jobs/[0-9a-f]+' | grep -oE '[0-9a-f]+$' | head -1)
+  [ -n "$job" ] || job=$(readlink "/proc/$pid/cwd" 2>/dev/null | grep -oE '/jobs/[0-9a-f]+' | grep -oE '[0-9a-f]+$' | head -1)
+  [ -n "$job" ] || return 1
+  printf '%s\t%s' "$job" "$(awk -v j="$job" -F'\t' '$1==j{print $2}' "$ROSTER" 2>/dev/null)"
+}
+# Is that agent's SESSION still live? Its lab-watch lock ("$LAB/.watch/<name>.lock" = "<pid> <sid>")
+# holds a live pid iff the session is up. A live owner is WARNED about its own scan (the cheap fix);
+# a dead or absent owner means nobody will act on a warning -> escalate to the technician to verify+kill.
+owner_live() {
+  local n="$1" lk="$LAB/.watch/$1.lock" p
+  [ -n "$n" ] && [ -f "$lk" ] || return 1
+  read -r p _ < "$lk" 2>/dev/null
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null
 }
 
 # clean stamps for pids that are gone (avoid unbounded growth / stale suppression on pid reuse)
@@ -67,39 +77,38 @@ while read -r pid etimes comm; do
   mount="$(printf '%s' "$hit" | grep -oE '^/(mnt/isilon(/wang_lab)?|home|scr1|cm/shared)')"
   short_args="$(printf '%s' "$args" | cut -c1-160)"
 
-  if traces_to_backend "$pid"; then
-    # LIVE session -> warn the owning agent
-    job=$( { tr '\0' '\n' < "/proc/$pid/environ"; } 2>/dev/null | grep -oE 'CLAUDE_JOB_DIR=.*/jobs/[0-9a-f]+' | grep -oE '[0-9a-f]+$' | head -1)
-    agent=$(awk -v j="$job" -F'\t' '$1==j{print $2}' "$ROSTER" 2>/dev/null)
+  # attribute to the owning agent from the PROCESS (environ/cwd), then decide by OWNER LIVENESS —
+  # not by whether the scan traces to a backend (an agent's detached scan never does, yet is owned).
+  IFS=$'\t' read -r job agent <<<"$(owner_of "$pid")" || true
+  if [ -n "$agent" ] && owner_live "$agent"; then
+    # LIVE OWNER -> warn the owning agent to scope it / move it off the login node
     subj="⚠ long-running scan on $mount (${etimes}s) — scope it or move it off the login node"
     body="Automated node-health warning (technician scan-watch). Your session is running a broad scan on the shared NFS mount $mount — a scoped scan finishes in seconds, so ${etimes}s means it's walking a large tree and storming the RPC table for everyone (the compute rule that exists because a find like this once ran 25.9h).
   pid=$pid  $comm  cwd=$cwd
   $short_args
 Please Ctrl-C / kill it and either scope it to the narrowest subdir with -maxdepth, or run it on a SLURM node writing to a manifest. If it's genuinely needed and bounded, ignore this."
-    if [ "$DRY" = 1 ]; then echo "WARN-OWNER ${agent:-<no roster>} (job ${job:-?}): $comm ${etimes}s on $mount cwd=$cwd"
-    elif [ -n "$agent" ]; then
-      LAB_FROM="scanwatch" "$SELF/lab" send --force "$agent" "$subj" "$body" >>"$LOG" 2>&1
-      touch "$stamp"; log "WARNED $agent (job $job): long scan pid=$pid $comm ${etimes}s on $mount cwd=$cwd args=[$short_args]"
+    if [ "$DRY" = 1 ]; then echo "WARN-OWNER $agent (job ${job:-?}, live): $comm ${etimes}s on $mount cwd=$cwd"
     else
-      # live backend but unattributable -> alert technician
-      [ "$DRY" = 1 ] || { LAB_FROM="scanwatch" "$SELF/lab" send --force "$TECH" "⚠ long scan on $mount, live but unattributable — check" "pid=$pid $comm ${etimes}s cwd=$cwd  $short_args" >>"$LOG" 2>&1; touch "$stamp"; }
-      log "ALERT-TECH (live, unattributable) pid=$pid $comm ${etimes}s on $mount cwd=$cwd"
+      LAB_FROM="scanwatch" "$SELF/lab" send --force "$agent" "$subj" "$body" >>"$LOG" 2>&1
+      touch "$stamp"; log "WARNED $agent (job $job, live): long scan pid=$pid $comm ${etimes}s on $mount cwd=$cwd args=[$short_args]"
     fi
   else
-    # ORPHANED / DETACHED -> alert technician to VERIFY then kill (no auto-kill; PPID=1 also = nohup/setsid)
+    # NO LIVE OWNER (session gone, or no CLAUDE_JOB_DIR at all) -> alert technician to VERIFY then kill
+    # by hand (no auto-kill; the owner can't act on a warning, so a human confirms orphaned vs detached).
     ppid=$(awk '/^PPid:/{print $2; exit}' "/proc/$pid/status" 2>/dev/null)
     sid=$(awk '{print $6}' "/proc/$pid/stat" 2>/dev/null)
     start="$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')"
-    subj="🛑 VERIFY+KILL? orphaned/detached scan on $mount running ${etimes}s (no live session)"
-    body="Automated node-health alert (scan-watch). A long-running scan on the shared NFS mount $mount does NOT trace to any live session backend — so it's orphaned (session exited: the class that caused the 25.9h incident) OR deliberately detached (nohup/setsid). Per policy this does NOT auto-kill — verify which, then kill by hand if orphaned:
+    owner_note="${agent:+owner=$agent (job $job) but its session is NOT live — }"
+    subj="🛑 VERIFY+KILL? scan on $mount running ${etimes}s with no live owner"
+    body="Automated node-health alert (scan-watch). A long-running scan on the shared NFS mount $mount has no live owning session — ${owner_note}so it's orphaned (session exited: the class that caused the 25.9h incident) OR a deliberate detached job (nohup/setsid). Per policy this does NOT auto-kill — verify which, then kill by hand if orphaned:
   pid=$pid  $comm  ${etimes}s  ppid=$ppid  sid=$sid  started=$start
   cwd=$cwd
   $short_args
-Verify: is sid $sid a dead session (nothing else alive in it) and is this on a forbidden root? If orphaned -> kill $pid (record argv/cwd/runtime/mount to BOARD + tell the owner if identifiable). If it's a deliberate detached job someone wanted -> leave it."
-    if [ "$DRY" = 1 ]; then echo "ALERT-TECH orphaned/detached: pid=$pid $comm ${etimes}s on $mount ppid=$ppid sid=$sid cwd=$cwd"
+Verify: is sid $sid a dead session (nothing else alive in it) on a forbidden root? If orphaned -> kill $pid (record argv/cwd/runtime/mount to BOARD${agent:+ + tell $agent}). If it's a deliberate detached job someone wanted -> leave it."
+    if [ "$DRY" = 1 ]; then echo "ALERT-TECH no-live-owner: pid=$pid $comm ${etimes}s on $mount ${agent:+owner=$agent(dead) }ppid=$ppid sid=$sid cwd=$cwd"
     else
       LAB_FROM="scanwatch" "$SELF/lab" send --force "$TECH" "$subj" "$body" >>"$LOG" 2>&1
-      touch "$stamp"; log "ALERT-TECH orphaned/detached scan pid=$pid $comm ${etimes}s on $mount ppid=$ppid sid=$sid cwd=$cwd args=[$short_args]"
+      touch "$stamp"; log "ALERT-TECH no-live-owner scan pid=$pid $comm ${etimes}s on $mount ${agent:+owner=$agent(dead) }ppid=$ppid sid=$sid cwd=$cwd args=[$short_args]"
     fi
   fi
 done < <(ps -eo pid=,etimes=,comm= 2>/dev/null)

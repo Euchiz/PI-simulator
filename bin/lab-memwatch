@@ -3,7 +3,9 @@
 # top consumer, attribute it to a lab agent (its process env carries CLAUDE_JOB_DIR ->
 # job-id -> roster name), and warn THAT agent to move heavy compute off the login node.
 # Cheap when memory is fine (a single /proc/meminfo read, then exit). Rate-limited per
-# agent. Session backends (no CLAUDE_JOB_DIR) and operators are never warned.
+# agent. Session backends (no CLAUDE_JOB_DIR), operators, and desktop apps that merely
+# inherited the env var (a browser viewing an artifact) are never warned; a detached
+# compute job that outlived its tool call still is (comm allowlist, not parent chain).
 #
 # Env (via $LAB_HOME/lab.env): LAB_MEM_WARN_PCT (default 90), LAB_MEM_COOLDOWN_MIN (30).
 # Test: LAB_MEMWATCH_DRYRUN=1 [LAB_MEM_WARN_PCT=50] lab-memwatch  (prints, never sends).
@@ -44,6 +46,20 @@ traces_to_backend() {
   return 1
 }
 
+# Unambiguous compute tools we WILL warn about even when DETACHED (backgrounded past the tool call
+# that launched them, so they no longer trace to a backend but a live agent still owns them). An
+# ALLOWLIST, not a denylist: it fails CLOSED, so a GUI app nobody enumerated is never warned — the
+# exact firefox-class false positive this replaces (ont-fm 2026-08-14). Deliberately EXCLUDES
+# java/node: those are also IDEs/Electron apps, so they only warn via the traces_to_backend path
+# (a confirmed live session), never via detached attribution. Extend with LAB_MEM_COMPUTE_COMMS.
+COMPUTE_COMMS="python python3 pypy R Rscript julia perl ruby samtools bcftools bedtools tabix bgzip minimap2 bwa bowtie2 hisat2 STAR salmon kallisto dorado guppy nanopolish f5c pod5 aws prefetch fasterq-dump fastq-dump gzip pigz zstd xz bzip2 lz4 sort gawk cutadapt fastp seqkit ${LAB_MEM_COMPUTE_COMMS:-}"
+is_compute_comm() {
+  local c="$1"
+  case " $COMPUTE_COMMS " in *" $c "*) return 0;; esac
+  case "$c" in python3.*|python2.*|Python) return 0;; esac   # versioned python (python3.11, …)
+  return 1
+}
+
 # 2) top consumers by RSS+swap (kb), biggest first (prefilter by RSS, cap the work)
 mapfile -t TOP < <(
   for pid in $(ps -eo pid= --sort=-rss 2>/dev/null | head -40); do
@@ -61,11 +77,24 @@ for row in "${TOP[@]}"; do
   [ -n "$job" ] || continue
   agent=$(awk -v j="$job" -F'\t' '$1==j{print $2}' "$ROSTER" 2>/dev/null)
   [ -n "$agent" ] || continue
-  if ! traces_to_backend "$pid"; then
-    [ "$DRY" = 1 ] && echo "skip: pid=$pid ($(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')) carries $agent's env but reparents to desktop/init — not a session job"
+  # Accept if it's live session compute (traces to a backend — warn regardless of comm, so an unusual
+  # live tool is still caught) OR a DETACHED but unambiguous compute tool (backgrounded past its tool
+  # call — a live agent still owns it). Reject a detached NON-compute process (a browser that merely
+  # inherited the env var). This is the two-questions fix: "does it have an owner?" (env, already
+  # answered above) is separate from "is it a job vs a desktop app?" (comm/backend, answered here).
+  pcomm="$(ps -o comm= -p "$pid" 2>/dev/null | tr -d ' ')"
+  case "$pcomm" in 2.1.*|claude)   # the session backend itself — baseline infra, not movable compute
+    [ "$DRY" = 1 ] && echo "skip: pid=$pid ($pcomm) is a session backend (baseline, not movable) -> $agent"
+    continue;; esac
+  if traces_to_backend "$pid"; then
+    [ "$DRY" = 1 ] && echo "live-backend compute: pid=$pid ($pcomm) -> $agent"
+  elif is_compute_comm "$pcomm"; then
+    [ "$DRY" = 1 ] && echo "detached compute-comm ($pcomm): pid=$pid -> $agent owns a backgrounded job"
+  else
+    [ "$DRY" = 1 ] && echo "skip: pid=$pid ($pcomm) carries $agent's env but is detached and not a known compute tool — not a job to warn about"
     continue
   fi
-  [ "$DRY" = 1 ] && echo "attributed: pid=$pid $((kb/1024))MB -> job=$job agent=$agent"
+  [ "$DRY" = 1 ] && echo "attributed: pid=$pid $((kb/1024))MB -> job=$job agent=$agent ($pcomm)"
   case "$OPS" in *" $agent "*) [ "$DRY" = 1 ] && echo "  ($agent is an operator — skip)"; continue;; esac
   c_pid=$pid; c_kb=$kb; c_job=$job; c_agent=$agent; break
 done
