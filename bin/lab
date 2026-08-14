@@ -183,7 +183,7 @@ install_hooks() {
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "LAB_HOME=$LAB_HOME $LAB_HOME/bin/lab read 2>/dev/null || true" } ] }
+      { "hooks": [ { "type": "command", "command": "LAB_HOME=$LAB_HOME $LAB_HOME/bin/lab read 2>/dev/null; LAB_HOME=$LAB_HOME $LAB_HOME/bin/lab startup 2>/dev/null; true" } ] }
     ]
   }
 }
@@ -417,11 +417,26 @@ cmd_name() {
   pkey "$raw"
 }
 
+# The SessionStart briefing — ONE source of truth the hook injects at every session start (also on
+# resume/compact). Points agents at the shared indexes (reach these, don't disk-scan) + arms delivery.
+# Edit here to change what every session sees at startup; hooks just call `lab startup`.
+cmd_startup() {
+  cat <<'EOF'
+[lab] Shared indexes — REACH FOR THESE before you disk-scan or re-derive (walking NFS is forbidden on this node):
+  • lab tool find <purpose>    right software: path + exact invocation + env + gotchas    (lab help tools)
+  • lab data find <keywords>   already have that dataset? check BEFORE downloading         (lab help data)
+  • lab claim find <topic>     what we've concluded — retracted stays hidden · lab facts   (lab help knowledge)
+  Register what YOU produce the moment it works:  lab tool add · lab data add · lab claim add.
+[lab] (Re-)arm live message delivery now — Monitor(command: "LAB_WATCH_INTERVAL=60 ~/lab/bin/lab watch", description: "incoming lab messages", persistent: true). Safe every time this fires (startup/resume/compact): lab watch holds a per-inbox lock — a live watcher exits harmlessly, a killed or superseded one is taken over; re-arming is how a dead watcher is replaced. Do NOT skip it assuming one is alive. New messages arrive as notifications; run `lab read` to consume.
+EOF
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   init)      cmd_init "$@";;
   register)  cmd_register "$@";;
   projects)  cmd_projects "$@";;
+  startup)   cmd_startup "$@";;
   status)    cmd_status "$@";;
   send|broadcast|inbox|read|watch) exec bash "$SELF/lab-msg" "$cmd" "$@";;
   meeting)   exec bash "$SELF/lab-meeting" "$@";;
