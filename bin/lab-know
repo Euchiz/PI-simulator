@@ -1,0 +1,366 @@
+#!/usr/bin/env python3
+"""lab-know — Lab Knowledge Map / claims ledger (engine for `lab claim|branch|facts`).
+
+A claims ledger / experiment knowledge-graph: every result, insight, null, decision,
+method-lesson and settled-fact is a NODE carrying its SETTING, STATUS, provenance and
+typed EDGES (retracts/supersedes/confounded_by/...). The #1 correctness property is
+STATUS-AWARE retrieval — a read NEVER returns a retracted/superseded claim as current.
+
+Mirrors lab-data's proven choices: SQLite single file (~/lab/knowledge.db), FTS5, flock
+write-mutex, rollback-journal (NFS-safe, no WAL), maintenance off the write path.
+Companion to (not a replacement for) `lab data` (find verified X) and git (code/artifacts).
+"""
+import sqlite3, sys, os, re, argparse, datetime, hashlib
+
+LAB  = os.environ.get("LAB_HOME", os.path.expanduser("~/lab"))
+DB   = os.path.join(LAB, "knowledge.db")
+LOCK = os.path.join(LAB, ".knowledge.lock")
+WHO  = os.environ.get("LAB_FROM") or os.environ.get("LAB_SESSION") or "unknown"
+
+KINDS    = ("result", "insight", "decision", "settled-fact", "method-lesson")
+STATUSES = ("open", "holds", "null", "retracted", "superseded", "confounded")
+RELS     = ("retracts", "supersedes", "confounded_by", "refines", "contradicts",
+            "replicates", "depends_on", "part_of")
+DEAD     = ("retracted", "superseded")   # excluded from the primary (current) set
+
+def now(): return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def die(msg, code=1): print(f"lab claim: {msg}", file=sys.stderr); sys.exit(code)
+
+def slug(s):
+    s = re.sub(r"[^a-z0-9]+", "-", (s or "").lower()).strip("-")
+    return s[:40] or "claim"
+
+def mkid(con, statement, setting):
+    base = slug(statement)
+    h = hashlib.sha1(f"{statement}|{setting}|{now()}".encode()).hexdigest()[:4]
+    cand = f"{base}-{h}"
+    n = 1
+    while con.execute("SELECT 1 FROM claim WHERE id=?", (cand,)).fetchone():
+        n += 1; cand = f"{base}-{h}{n}"
+    return cand
+
+def connect():
+    con = sqlite3.connect(DB, timeout=30)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=DELETE")   # rollback journal — NFS-safe (no WAL/-shm mmap)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute("PRAGMA foreign_keys=ON")
+    ensure_schema(con)
+    return con
+
+FTS_REBUILD = """
+    DROP TRIGGER IF EXISTS claim_ai; DROP TRIGGER IF EXISTS claim_ad; DROP TRIGGER IF EXISTS claim_au;
+    DROP TABLE IF EXISTS claim_fts;
+    CREATE VIRTUAL TABLE claim_fts USING fts5(
+      statement, detail, setting, evidence, content='claim', content_rowid='rowid');
+    CREATE TRIGGER claim_ai AFTER INSERT ON claim BEGIN
+      INSERT INTO claim_fts(rowid,statement,detail,setting,evidence)
+      VALUES (new.rowid,new.statement,new.detail,new.setting,new.evidence);
+    END;
+    CREATE TRIGGER claim_ad AFTER DELETE ON claim BEGIN
+      INSERT INTO claim_fts(claim_fts,rowid,statement,detail,setting,evidence)
+      VALUES ('delete',old.rowid,old.statement,old.detail,old.setting,old.evidence);
+    END;
+    CREATE TRIGGER claim_au AFTER UPDATE ON claim BEGIN
+      INSERT INTO claim_fts(claim_fts,rowid,statement,detail,setting,evidence)
+      VALUES ('delete',old.rowid,old.statement,old.detail,old.setting,old.evidence);
+      INSERT INTO claim_fts(rowid,statement,detail,setting,evidence)
+      VALUES (new.rowid,new.statement,new.detail,new.setting,new.evidence);
+    END;
+    INSERT INTO claim_fts(rowid,statement,detail,setting,evidence)
+      SELECT rowid,statement,detail,setting,evidence FROM claim;
+"""
+
+def ensure_schema(con):
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS claim(
+      id TEXT PRIMARY KEY,
+      statement TEXT NOT NULL,
+      detail TEXT,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'open',
+      setting TEXT NOT NULL,                 -- REQUIRED: the conditions/config that produced it
+      evidence TEXT,
+      status_reason TEXT,                    -- why the current status (retraction/confound note)
+      branch TEXT,
+      source TEXT,                           -- meeting:.. / commit:.. / run:.. / artifact:..
+      author TEXT,
+      date TEXT,                             -- ISO date of the result
+      verified INTEGER DEFAULT 0, verified_how TEXT,
+      created TEXT NOT NULL, updated TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS edge(
+      src TEXT NOT NULL, rel TEXT NOT NULL, dst TEXT NOT NULL, note TEXT, created TEXT NOT NULL,
+      PRIMARY KEY (src, rel, dst));
+    CREATE TABLE IF NOT EXISTS branch(
+      name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'open',
+      mechanism TEXT, end_condition TEXT, updated_by TEXT, updated TEXT NOT NULL);
+    CREATE INDEX IF NOT EXISTS ix_claim_status ON claim(status);
+    CREATE INDEX IF NOT EXISTS ix_claim_kind   ON claim(kind);
+    CREATE INDEX IF NOT EXISTS ix_claim_branch ON claim(branch);
+    CREATE INDEX IF NOT EXISTS ix_edge_dst ON edge(dst);
+    """)
+    if not con.execute("SELECT 1 FROM sqlite_master WHERE name='claim_fts'").fetchone():
+        con.executescript(FTS_REBUILD)
+    con.commit()
+
+class WriteLock:
+    def __enter__(self):
+        os.makedirs(LAB, exist_ok=True)
+        self.f = open(LOCK, "w"); import fcntl; fcntl.flock(self.f, fcntl.LOCK_EX); return self
+    def __exit__(self, *a):
+        import fcntl; fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+
+def get(con, cid):
+    r = con.execute("SELECT * FROM claim WHERE id=?", (cid,)).fetchone()
+    if not r: die(f"no claim '{cid}'")
+    return r
+
+def successor(con, cid):
+    """the live claim that supersedes cid, if any (NEWID supersedes OLDID)."""
+    r = con.execute("SELECT src FROM edge WHERE dst=? AND rel='supersedes'", (cid,)).fetchone()
+    return r["src"] if r else None
+
+def badge(st): return st.upper()
+
+def fmt_hit(con, r, verbose=False):
+    line = f"  [{badge(r['status'])}] {r['id']}  {r['statement']}"
+    sub = f"      setting: {r['setting']}"
+    if r["branch"]: sub += f"  · branch: {r['branch']}"
+    meta = "      " + " · ".join(x for x in (r["kind"], r["source"], r["date"], r["author"]) if x)
+    out = [line, sub, meta]
+    if r["status"] != "holds":
+        why = r["status_reason"] or ""
+        succ = successor(con, r["id"])
+        tail = f"      ⚠ {r['status']}"
+        if why: tail += f": {why}"
+        if succ: tail += f"  → live successor: {succ}"
+        out.append(tail)
+    return "\n".join(out)
+
+# ---------- reads (status-aware) ----------
+def fts_ids(con, q):
+    terms = " ".join(f'"{t}"' for t in re.findall(r"\w+", q))
+    if not terms: return []
+    rows = con.execute("SELECT c.id FROM claim_fts f JOIN claim c ON c.rowid=f.rowid "
+                       "WHERE claim_fts MATCH ? ORDER BY rank", (terms,)).fetchall()
+    return [r["id"] for r in rows]
+
+def cmd_find(a):
+    con = connect()
+    ids = fts_ids(con, a.query)
+    if not ids:
+        print("(no matching claims)"); return
+    current = [i for i in ids if get(con, i)["status"] not in DEAD]
+    dead    = [i for i in ids if get(con, i)["status"] in DEAD]
+    print(f"CURRENT claims matching '{a.query}':")
+    if current:
+        for i in current: print(fmt_hit(con, get(con, i)))
+    else:
+        print("  (none current)")
+    if dead and not a.current_only:
+        print("\nnot current (shown so you don't re-cite them):")
+        for i in dead:
+            r = get(con, i); succ = successor(con, i)
+            s = f"  [{badge(r['status'])}] {r['id']}  ~~{r['statement']}~~"
+            if r["status_reason"]: s += f"  ({r['status_reason']})"
+            if succ: s += f"  → live: {succ}"
+            print(s)
+
+def cmd_show(a):
+    con = connect(); r = get(con, a.id)
+    print(f"[{badge(r['status'])}] {r['id']}")
+    print(f"  {r['statement']}")
+    for k in ("kind","setting","evidence","branch","source","author","date","status_reason"):
+        if r[k]: print(f"  {k:<8}: {r[k]}")
+    if r["verified"]: print(f"  verified: yes — {r['verified_how'] or ''}")
+    if r["detail"]: print(f"  detail  : {r['detail']}")
+    out = con.execute("SELECT rel,dst,note FROM edge WHERE src=? ORDER BY rel", (a.id,)).fetchall()
+    inc = con.execute("SELECT rel,src,note FROM edge WHERE dst=? ORDER BY rel", (a.id,)).fetchall()
+    if out:
+        print("  edges out:")
+        for e in out: print(f"    -{e['rel']}-> {e['dst']}" + (f"  ({e['note']})" if e['note'] else ""))
+    if inc:
+        print("  edges in:")
+        for e in inc: print(f"    <-{e['rel']}- {e['src']}" + (f"  ({e['note']})" if e['note'] else ""))
+
+def cmd_list(a):
+    con = connect()
+    q = "SELECT * FROM claim WHERE 1=1"; args = []
+    if a.branch: q += " AND branch=?"; args.append(a.branch)
+    if a.status: q += " AND status=?"; args.append(a.status)
+    if a.kind:   q += " AND kind=?";   args.append(a.kind)
+    if a.author: q += " AND author=?"; args.append(a.author)
+    if not a.all and not a.status:
+        q += " AND status NOT IN ('retracted','superseded')"   # status-aware default
+    q += " ORDER BY updated DESC"
+    rows = con.execute(q, args).fetchall()
+    if not rows: print("(no claims)"); return
+    for r in rows: print(f"  [{badge(r['status'])}] {r['id']:<28} {r['statement'][:70]}")
+    print(f"  — {len(rows)} claim(s)")
+
+def cmd_facts(a):
+    con = connect()
+    rows = con.execute("SELECT * FROM claim WHERE kind='settled-fact' AND status='holds' "
+                       "ORDER BY updated DESC").fetchall()
+    print("SETTLED FACTS (kind=settled-fact, status=holds) — what we know for sure:")
+    if not rows: print("  (none yet — settled-facts need a curation pass; see the seed notes)"); return
+    for r in rows:
+        print(f"  · {r['statement']}")
+        if r["setting"]: print(f"      under: {r['setting']}")
+
+def cmd_review(a):
+    """batch view of auto-extracted / unconfirmed claims (status=open) for a human to confirm."""
+    con = connect()
+    rows = con.execute("SELECT * FROM claim WHERE status='open' ORDER BY created DESC").fetchall()
+    if not rows: print("(no open/unconfirmed claims — nothing to review)"); return
+    print(f"OPEN / unconfirmed claims to review ({len(rows)}): confirm with `lab claim confirm <id> --status ...`")
+    for r in rows:
+        print(f"  [OPEN] {r['id']}  {r['statement']}")
+        print(f"      setting: {r['setting']}  · {r['source'] or ''} {r['date'] or ''}")
+
+# ---------- writes (flock + txn) ----------
+def add_edge(con, src, rel, dst, note=None):
+    if rel not in RELS: die(f"unknown rel '{rel}' (of {RELS})")
+    con.execute("INSERT OR REPLACE INTO edge(src,rel,dst,note,created) VALUES (?,?,?,?,?)",
+                (src, rel, dst, note, now()))
+
+def cmd_add(a):
+    if a.kind not in KINDS: die(f"kind must be one of {KINDS}")
+    if a.status not in STATUSES: die(f"status must be one of {STATUSES}")
+    if not a.setting: die("--setting is REQUIRED (the conditions/config that produced this claim)")
+    with WriteLock():
+        con = connect()
+        cid = a.id or mkid(con, a.statement, a.setting)
+        if con.execute("SELECT 1 FROM claim WHERE id=?", (cid,)).fetchone(): die(f"id '{cid}' exists")
+        t = now()
+        con.execute("""INSERT INTO claim(id,statement,detail,kind,status,setting,evidence,branch,
+                       source,author,date,verified,verified_how,created,updated)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (cid, a.statement, a.detail, a.kind, a.status, a.setting, a.evidence, a.branch,
+                     a.source, a.author or WHO, a.date, 1 if a.verified else 0, a.verified_how, t, t))
+        if a.supersedes:
+            get(con, a.supersedes)
+            add_edge(con, cid, "supersedes", a.supersedes, "superseded on add")
+            con.execute("UPDATE claim SET status='superseded', status_reason=?, updated=? WHERE id=?",
+                        (f"superseded by {cid}", t, a.supersedes))
+        if a.confounded_by:
+            con.execute("UPDATE claim SET status='confounded', status_reason=?, updated=? WHERE id=?",
+                        (a.confounded_by, t, cid))
+        con.commit()
+    print(f"added claim {cid}")
+
+def cmd_retract(a):
+    with WriteLock():
+        con = connect(); get(con, a.id); t = now()
+        new_status = "superseded" if a.superseded_by else "retracted"
+        reason = a.reason or ("superseded" if a.superseded_by else "retracted")
+        con.execute("UPDATE claim SET status=?, status_reason=?, updated=? WHERE id=?",
+                    (new_status, reason, t, a.id))
+        if a.superseded_by:
+            get(con, a.superseded_by)
+            add_edge(con, a.superseded_by, "supersedes", a.id, a.reason)
+        con.commit()
+    print(f"claim {a.id} -> {new_status}" + (f" (superseded by {a.superseded_by})" if a.superseded_by else ""))
+
+def cmd_confirm(a):
+    if a.status not in STATUSES: die(f"status must be one of {STATUSES}")
+    with WriteLock():
+        con = connect(); r = get(con, a.id)
+        if r["status"] != "open":
+            die(f"claim {a.id} is '{r['status']}', not 'open' — confirm is for unconfirmed auto-extracted claims")
+        con.execute("UPDATE claim SET status=?, status_reason=?, updated=? WHERE id=?",
+                    (a.status, a.reason, now(), a.id))
+        con.commit()
+    print(f"claim {a.id} confirmed -> {a.status}")
+
+def cmd_link(a):
+    with WriteLock():
+        con = connect(); get(con, a.src)
+        add_edge(con, a.src, a.rel, a.dst, a.note); con.commit()
+    print(f"edge {a.src} -{a.rel}-> {a.dst}")
+
+# ---------- branches ----------
+def cmd_branch(a):
+    con = connect()
+    if a.bcmd == "list":
+        rows = con.execute("SELECT * FROM branch ORDER BY status, name").fetchall()
+        for r in rows: print(f"  [{r['status']:<6}] {r['name']:<28} {(r['mechanism'] or '')[:60]}")
+        if not rows: print("  (no branches)")
+    elif a.bcmd == "show":
+        r = con.execute("SELECT * FROM branch WHERE name=?", (a.name,)).fetchone()
+        if not r: die(f"no branch '{a.name}'")
+        print(f"[{r['status']}] {r['name']}")
+        for k in ("mechanism","end_condition","updated_by","updated"):
+            if r[k]: print(f"  {k}: {r[k]}")
+        cs = con.execute("SELECT status,count(*) c FROM claim WHERE branch=? GROUP BY status", (a.name,)).fetchall()
+        if cs: print("  claims: " + ", ".join(f"{x['status']}={x['c']}" for x in cs))
+    elif a.bcmd == "set":
+        with WriteLock():
+            con = connect(); t = now()
+            con.execute("""INSERT INTO branch(name,status,mechanism,end_condition,updated_by,updated)
+                           VALUES (?,?,?,?,?,?)
+                           ON CONFLICT(name) DO UPDATE SET
+                             status=COALESCE(excluded.status,branch.status),
+                             mechanism=COALESCE(excluded.mechanism,branch.mechanism),
+                             end_condition=COALESCE(excluded.end_condition,branch.end_condition),
+                             updated_by=excluded.updated_by, updated=excluded.updated""",
+                        (a.name, a.status or "open", a.mechanism, a.end_condition, WHO, t))
+            con.commit()
+        print(f"branch {a.name} set")
+    elif a.bcmd == "map":
+        rows = con.execute("SELECT * FROM branch ORDER BY status, name").fetchall()
+        print("EXPLORATION MAP (branches × status):")
+        for r in rows:
+            cs = dict((x["status"], x["c"]) for x in con.execute(
+                "SELECT status,count(*) c FROM claim WHERE branch=? GROUP BY status", (r["name"],)).fetchall())
+            counts = " ".join(f"{k}:{v}" for k, v in cs.items())
+            print(f"  [{r['status']:<6}] {r['name']:<26} {(r['mechanism'] or '')[:50]}  {counts}")
+            if r["end_condition"]: print(f"           end: {r['end_condition']}")
+        if not rows: print("  (no branches)")
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("add"); a.set_defaults(fn=cmd_add)
+    a.add_argument("--statement", required=True); a.add_argument("--detail")
+    a.add_argument("--kind", required=True); a.add_argument("--status", default="open")
+    a.add_argument("--setting", required=True); a.add_argument("--evidence")
+    a.add_argument("--branch"); a.add_argument("--source"); a.add_argument("--author")
+    a.add_argument("--date"); a.add_argument("--id"); a.add_argument("--verified", action="store_true")
+    a.add_argument("--verified-how", dest="verified_how")
+    a.add_argument("--supersedes"); a.add_argument("--confounded-by", dest="confounded_by")
+
+    f = sub.add_parser("find"); f.set_defaults(fn=cmd_find)
+    f.add_argument("query"); f.add_argument("--current-only", action="store_true", dest="current_only")
+
+    s = sub.add_parser("show"); s.set_defaults(fn=cmd_show); s.add_argument("id")
+
+    l = sub.add_parser("list"); l.set_defaults(fn=cmd_list)
+    for opt in ("branch","status","kind","author"): l.add_argument(f"--{opt}")
+    l.add_argument("--all", action="store_true")
+
+    r = sub.add_parser("retract"); r.set_defaults(fn=cmd_retract)
+    r.add_argument("id"); r.add_argument("--reason"); r.add_argument("--superseded-by", dest="superseded_by")
+
+    c = sub.add_parser("confirm"); c.set_defaults(fn=cmd_confirm)
+    c.add_argument("id"); c.add_argument("--status", required=True); c.add_argument("--reason")
+
+    sub.add_parser("review").set_defaults(fn=cmd_review)
+    sub.add_parser("facts").set_defaults(fn=cmd_facts)
+
+    lk = sub.add_parser("link"); lk.set_defaults(fn=cmd_link)
+    lk.add_argument("src"); lk.add_argument("rel"); lk.add_argument("dst"); lk.add_argument("--note")
+
+    b = sub.add_parser("branch"); b.set_defaults(fn=cmd_branch)
+    b.add_argument("bcmd", choices=["list","show","set","map"]); b.add_argument("name", nargs="?")
+    b.add_argument("--status"); b.add_argument("--mechanism"); b.add_argument("--end-condition", dest="end_condition")
+    return p
+
+def main(argv):
+    # `lab facts` / `lab branch` dispatch here too — normalize so argparse sees the subcommand
+    args = build_parser().parse_args(argv)
+    args.fn(args)
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

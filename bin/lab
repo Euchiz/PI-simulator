@@ -2,8 +2,8 @@
 # lab — tiny coordination CLI for a multi-session "lab".
 # Blackboard lives in $LAB_HOME (default ~/lab). Sessions share this filesystem.
 # This file is the DISPATCHER + identity/admin/announce; each family lives in its
-# own module beside it (lab-msg, lab-meeting, lab-data, lab-task, lab-roster, lab-ext),
-# with shared helpers in lab-common.sh.
+# own module beside it (lab-msg, lab-meeting, lab-data, lab-task, lab-roster, lab-ext,
+# lab-know), with shared helpers in lab-common.sh.
 set -euo pipefail
 . "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lab-common.sh"
 
@@ -70,6 +70,27 @@ One accession may cover MANY datasets (a SuperSeries/BioProject): register each 
 with the SAME real accession + --subset. Never invent sub-accessions.
 EOF
 ;;
+    claim|claims|knowledge|know|facts|branch) cat <<'EOF'
+lab — knowledge map / claims ledger (scientific STATE: results, nulls, decisions, facts)
+
+  lab claim find <query>           STATUS-AWARE search: current claims only; retracted/superseded
+                                     shown struck-through with their live successor (never as current)
+  lab claim add --statement … --kind … --setting … [--status …] [--evidence …] [--branch …]
+                --source … [--supersedes ID] [--confounded-by "note"]
+  lab claim show <id>              Full node + all edges (supersedes/confounded_by/refines/…)
+  lab claim retract <id> --reason "…" [--superseded-by NEWID]
+  lab claim list [--branch B] [--status S] [--kind K] [--author A] [--all]
+  lab claim confirm <id> --status holds|null|… [--reason]   Confirm an auto-extracted (open) claim
+  lab claim review                 Batch view of open/unconfirmed claims to confirm
+  lab branch list|show <name>|set <name> --status … --mechanism … --end-condition …
+  lab branch map                   Exploration tree: branches × status + counts (holds/null/retracted)
+  lab facts                        Settled facts (kind=settled-fact, status=holds) — "what we know"
+
+kind ∈ result|insight|decision|settled-fact|method-lesson.  --setting is REQUIRED: the conditions
+that produced the claim (this is what keeps "retracted-under-confound vs holds-under-a-tweak" straight).
+Status/retraction are ASSERTED, never guessed; auto-extracted claims land as `open` for confirmation.
+EOF
+;;
     board|announce) cat <<'EOF'
 lab — announcements & status
 
@@ -101,10 +122,11 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   TASKS         lab task [list|add|take|done|fail|drop|show|tag]
   MEETINGS      lab meeting [convene|post|read|status|compile|list|close|checkin]
   DATA          lab data [check|find|add|update|show|list|mv|render|export|audit|maint]
+  KNOWLEDGE     lab claim [find|add|show|retract|list|confirm|review] · branch [map|set] · facts
   ANNOUNCE      lab note · board · status · digest · health
   ADMIN         lab init · register · manager · technician · projects · name · whoami · ext
 
-  lab help <topic>     topics: messaging, tasks, meetings, data, board, admin
+  lab help <topic>     topics: messaging, tasks, meetings, data, knowledge, board, admin
   lab <cmd> --help     per-command flags (data/task/ext)
 
 Quick start:  lab init  ·  lab register <name> <path>  ·  lab who  ·  lab task
@@ -388,6 +410,9 @@ case "$cmd" in
   who)       exec python3 "$SELF/lab-roster" who;;
   roster)    exec python3 "$SELF/lab-roster" "$@";;
   data)      exec python3 "$SELF/lab-data" "$@";;
+  claim)     exec python3 "$SELF/lab-know" "$@";;
+  branch)    exec python3 "$SELF/lab-know" branch "$@";;
+  facts)     exec python3 "$SELF/lab-know" facts "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;
   note)      cmd_note "$@";;
