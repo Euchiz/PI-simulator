@@ -200,9 +200,9 @@ def commit_claim(c):
             "--author", c["author"]]
     if c.get("date"): args += ["--date", c["date"]]
     if c.get("evidence"): args += ["--evidence", c["evidence"]]
+    if c.get("status_reason"): args += ["--status-reason", c["status_reason"]]
     if c.get("branch"): args += ["--branch", c["branch"]]
     r = subprocess.run(args, capture_output=True, text=True, env={**os.environ, "LAB_HOME": LAB})
-    # status_reason isn't an add flag; retraction rows keep their why in evidence-less note via reason on retract.
     return r.returncode == 0, (r.stdout + r.stderr).strip()
 
 def commit_branch(b):

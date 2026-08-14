@@ -262,11 +262,12 @@ def cmd_add(a):
         cid = a.id or mkid(con, a.statement, a.setting)
         if con.execute("SELECT 1 FROM claim WHERE id=?", (cid,)).fetchone(): die(f"id '{cid}' exists")
         t = now()
-        con.execute("""INSERT INTO claim(id,statement,detail,kind,status,setting,evidence,branch,
-                       source,author,date,verified,verified_how,created,updated)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (cid, a.statement, a.detail, a.kind, a.status, a.setting, a.evidence, a.branch,
-                     a.source, a.author or resolve_self() or "unknown", a.date, 1 if a.verified else 0, a.verified_how, t, t))
+        con.execute("""INSERT INTO claim(id,statement,detail,kind,status,setting,evidence,status_reason,
+                       branch,source,author,date,verified,verified_how,created,updated)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (cid, a.statement, a.detail, a.kind, a.status, a.setting, a.evidence, a.status_reason,
+                     a.branch, a.source, a.author or resolve_self() or "unknown", a.date,
+                     1 if a.verified else 0, a.verified_how, t, t))
         if a.supersedes:
             get(con, a.supersedes)
             add_edge(con, cid, "supersedes", a.supersedes, "superseded on add")
@@ -374,6 +375,7 @@ def build_parser():
     a.add_argument("--statement", required=True); a.add_argument("--detail")
     a.add_argument("--kind", required=True); a.add_argument("--status", default="open")
     a.add_argument("--setting", required=True); a.add_argument("--evidence")
+    a.add_argument("--status-reason", dest="status_reason", help="why the current status (e.g. retraction reason)")
     a.add_argument("--branch"); a.add_argument("--source"); a.add_argument("--author")
     a.add_argument("--date"); a.add_argument("--id"); a.add_argument("--verified", action="store_true")
     a.add_argument("--verified-how", dest="verified_how")
