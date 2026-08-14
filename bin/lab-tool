@@ -21,14 +21,22 @@ CSVF = os.path.join(LAB, "tools.csv")
 
 # columns the caller can set (order = display order); required set enforced in add()
 COLS = ["id","name","kind","path","invocation","env","description","example","tags",
-        "gotchas","version","verified","verified_how","added_by","updated_by","created","updated"]
-# free-text columns the caller may set on add/update (everything but id + bookkeeping)
+        "gotchas","version","related","verified","verified_how","verified_by","verified_at",
+        "added_by","updated_by","created","updated"]
+# free-text columns the caller may set on add/update (everything but id + bookkeeping).
+# verified_by/verified_at are set AUTOMATICALLY on --verified, never by the caller — a stale
+# verification carries false confidence, so it records who checked and when (morpheus 2026-08-14).
 WRITE_COLS = ["name","kind","path","invocation","env","description","example","tags",
-              "gotchas","version","verified_how"]
+              "gotchas","version","related","verified_how"]
+VERIFY_STALE_DAYS = int(os.environ.get("LAB_TOOL_VERIFY_STALE_DAYS", "90"))
 
 def now():  return datetime.datetime.now().isoformat(timespec="seconds")
 def pkey(s):
     return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+def _stale(vat):   # a verification older than the threshold carries false confidence
+    if not vat: return False
+    try: return (datetime.datetime.now() - datetime.datetime.fromisoformat(vat)).days > VERIFY_STALE_DAYS
+    except Exception: return False
 
 def resolve_self():
     jd  = os.environ.get("CLAUDE_JOB_DIR","")
@@ -80,12 +88,16 @@ def ensure_schema(con):
     CREATE TABLE IF NOT EXISTS tools(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT, path TEXT,
       invocation TEXT NOT NULL, env TEXT, description TEXT NOT NULL, example TEXT,
-      tags TEXT, gotchas TEXT, version TEXT,
-      verified INTEGER DEFAULT 0, verified_how TEXT,
+      tags TEXT, gotchas TEXT, version TEXT, related TEXT,
+      verified INTEGER DEFAULT 0, verified_how TEXT, verified_by TEXT, verified_at TEXT,
       added_by TEXT, updated_by TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS ix_tools_tags ON tools(tags);
     CREATE INDEX IF NOT EXISTS ix_tools_kind ON tools(kind);
     """)
+    # idempotent migrations for DBs created before these columns existed
+    cols = [r[1] for r in con.execute("PRAGMA table_info(tools)")]
+    for c in ("related", "verified_by", "verified_at"):
+        if c not in cols: con.execute(f"ALTER TABLE tools ADD COLUMN {c} TEXT")
     if not con.execute("SELECT 1 FROM sqlite_master WHERE name='tools_fts'").fetchone():
         con.executescript(FTS_TRIGGERS)
     con.commit()
@@ -117,10 +129,16 @@ def cmd_find(a):
         sys.exit(1)   # non-zero so a script won't assume a tool exists
     for r in rows:
         vv = "✓" if r["verified"] else "·"
-        print(f"[{vv}] {r['id']:<20} ({r['kind'] or '?'})  {(r['description'] or '')[:62]}")
+        vtag = ""
+        if r["verified"]:
+            vtag = "  [verified" + (f" by {r['verified_by']}" if r["verified_by"] else "")
+            vtag += (f" {r['verified_at'][:10]}" if r["verified_at"] else "")
+            vtag += ("  ⏳STALE" if _stale(r["verified_at"]) else "") + "]"
+        print(f"[{vv}] {r['id']:<20} ({r['kind'] or '?'})  {(r['description'] or '')[:60]}{vtag}")
         loc = f"   @ {r['path']}" if r["path"] else ""
         print(f"      run: {(r['invocation'] or '')[:80]}{loc}")
         if r["env"]:     print(f"      env: {(r['env'])[:88]}")
+        if r["related"]: print(f"      related: {r['related']}")
         if r["gotchas"]: print(f"      ⚠  {(r['gotchas'])[:88]}")
 
 def cmd_show(a):
@@ -151,12 +169,20 @@ def cmd_add(a):
         if not (vals.get(req) or (req=="id" and vals["id"])):
             die(f"--{req} is required", 2)
     who = a.by or resolve_self() or "unknown"
-    vals["added_by"]=who; vals["updated_by"]=who; vals["created"]=now(); vals["updated"]=now()
+    t = now()
+    vals["added_by"]=who; vals["updated_by"]=who; vals["created"]=t; vals["updated"]=t
     vals["verified"] = 1 if a.verified else 0
+    if a.verified: vals["verified_by"]=who; vals["verified_at"]=t   # who/when, not just a boolean
     with WriteLock():
         con = connect()
-        if con.execute("SELECT 1 FROM tools WHERE id=?", (vals["id"],)).fetchone():
-            die(f"id '{vals['id']}' already exists — use `lab tool update {vals['id']}`.", 4)
+        ex = con.execute("SELECT added_by, path FROM tools WHERE id=?", (vals["id"],)).fetchone()
+        if ex:
+            # DON'T reflexively push toward update — for a different checkout/copy that DESTROYS the
+            # first owner's gotchas. Offer the sibling-id path too (ont-fm 2026-08-14).
+            die(f"id '{vals['id']}' already exists (by {ex['added_by'] or '?'} @ {ex['path'] or 'n/a'}). Two cases:\n"
+                f"  • SAME tool, correcting it        -> lab tool update {vals['id']} …   (this OVERWRITES those fields)\n"
+                f"  • DIFFERENT checkout/copy/version -> add a SIBLING under a distinct id, e.g. --id {vals['id']}-<variant>,\n"
+                f"                                       and link them: --related {vals['id']}   (both stay, both show in `find`)", 4)
         cols=[c for c in COLS]
         con.execute(f"INSERT INTO tools ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
                     [vals.get(c) for c in cols])
@@ -169,14 +195,21 @@ def cmd_update(a):
     for c in WRITE_COLS:
         v = getattr(a, c, None)
         if v is not None: sets[c] = v
-    if a.verified: sets["verified"] = 1
-    if not sets: die("nothing to update — pass at least one field", 2)
     who = a.by or resolve_self() or "unknown"
-    sets["updated_by"]=who; sets["updated"]=now()
+    t = now()
+    if a.verified:
+        sets["verified"] = 1; sets["verified_by"] = who; sets["verified_at"] = t   # re-verify => re-stamp
+    if not sets: die("nothing to update — pass at least one field", 2)
+    sets["updated_by"]=who; sets["updated"]=t
     with WriteLock():
         con = connect()
-        if not con.execute("SELECT 1 FROM tools WHERE id=?", (idv,)).fetchone():
+        row = con.execute("SELECT added_by, path FROM tools WHERE id=?", (idv,)).fetchone()
+        if not row:
             die(f"no tool id '{idv}' — use `lab tool add` to create it.", 3)
+        if row["added_by"] and row["added_by"] != who:   # you're overwriting someone else's entry
+            print(f"note: '{idv}' was registered by {row['added_by']} (@ {row['path'] or 'n/a'}); this "
+                  f"OVERWRITES their entry. If yours is a different copy, cancel and "
+                  f"`lab tool add --id {idv}-<variant> --related {idv}` instead.", file=sys.stderr)
         con.execute(f"UPDATE tools SET {','.join(k+'=?' for k in sets)} WHERE id=?",
                     list(sets.values())+[idv]); con.commit()
     print(f"lab tool: updated '{idv}'  (by {who})")
@@ -218,12 +251,17 @@ def cmd_export(a):
     print(f"lab tool: wrote {CSVF}")
 
 def cmd_audit(a):
-    con = connect(); rows = con.execute("SELECT id,path,invocation,verified,updated_by FROM tools").fetchall()
+    con = connect()
+    rows = con.execute("SELECT id,path,verified,verified_by,verified_at,updated_by FROM tools").fetchall()
     # stat() only — never walks a tree. A path may be a binary, a script, an env prefix, or a repo dir.
     missing = [r for r in rows if r["path"] and not os.path.exists(r["path"])]
     unver   = [r for r in rows if not r["verified"]]
-    print(f"audit: {len(rows)} tools · {len(missing)} MISSING paths · {len(unver)} unverified")
+    stale   = [r for r in rows if r["verified"] and _stale(r["verified_at"])]   # verified long ago = false confidence
+    print(f"audit: {len(rows)} tools · {len(missing)} MISSING paths · {len(unver)} unverified · "
+          f"{len(stale)} stale-verify (>{VERIFY_STALE_DAYS}d)")
     for r in missing: print(f"  MISSING  {r['id']:<22} {r['path']}   (by {r['updated_by']})")
+    for r in stale:   print(f"  STALE    {r['id']:<22} verified {r['verified_at'][:10] if r['verified_at'] else '?'} "
+                            f"by {r['verified_by'] or '?'} — re-verify the path still resolves")
     for r in unver:   print(f"  unverif  {r['id']:<22} (by {r['updated_by']})")
     sys.exit(2 if missing else 0)
 
