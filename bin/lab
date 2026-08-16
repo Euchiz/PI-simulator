@@ -80,6 +80,8 @@ lab — software/tool registry (path + how-to-run, so you never disk-scan for a 
   lab tool update <id> --…         Change any field
   lab tool list [--tag T] [--kind K]
   lab tool mv <id> <newpath>       Record that a tool's path moved
+  lab tool deprecate <id> --for <replacement>   Retire a superseded/duplicate entry (kept so its
+                                   id still resolves; find/list rank it last + flag it, audit ignores it)
   lab tool render|export|audit     Human snapshot / CSV backup / dead-path + unverified check
   lab tool maint                   render + export + audit (the daily cron target)
 
@@ -145,7 +147,7 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   TASKS         lab task [list|add|take|done|fail|drop|show|tag]
   MEETINGS      lab meeting [convene|post|read|status|compile|list|close|checkin]
   DATA          lab data [check|find|add|update|show|list|mv|render|export|audit|maint]
-  TOOLS         lab tool [find|show|add|update|list|mv|render|export|audit|maint]
+  TOOLS         lab tool [find|show|add|update|list|mv|deprecate|render|export|audit|maint]
   KNOWLEDGE     lab claim [find|add|show|retract|list|confirm|review] · branch [map|set] · facts
   ANNOUNCE      lab note · board · status · digest · health
   ADMIN         lab init · register · manager · technician · projects · name · whoami · ext

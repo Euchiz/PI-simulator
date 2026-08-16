@@ -21,7 +21,7 @@ CSVF = os.path.join(LAB, "tools.csv")
 
 # columns the caller can set (order = display order); required set enforced in add()
 COLS = ["id","name","kind","path","invocation","env","description","example","tags",
-        "gotchas","version","related","verified","verified_how","verified_by","verified_at",
+        "gotchas","version","related","deprecated","verified","verified_how","verified_by","verified_at",
         "added_by","updated_by","created","updated"]
 # free-text columns the caller may set on add/update (everything but id + bookkeeping).
 # verified_by/verified_at are set AUTOMATICALLY on --verified, never by the caller — a stale
@@ -88,7 +88,7 @@ def ensure_schema(con):
     CREATE TABLE IF NOT EXISTS tools(
       id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT, path TEXT,
       invocation TEXT NOT NULL, env TEXT, description TEXT NOT NULL, example TEXT,
-      tags TEXT, gotchas TEXT, version TEXT, related TEXT,
+      tags TEXT, gotchas TEXT, version TEXT, related TEXT, deprecated INTEGER DEFAULT 0,
       verified INTEGER DEFAULT 0, verified_how TEXT, verified_by TEXT, verified_at TEXT,
       added_by TEXT, updated_by TEXT NOT NULL, created TEXT NOT NULL, updated TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS ix_tools_tags ON tools(tags);
@@ -98,6 +98,7 @@ def ensure_schema(con):
     cols = [r[1] for r in con.execute("PRAGMA table_info(tools)")]
     for c in ("related", "verified_by", "verified_at"):
         if c not in cols: con.execute(f"ALTER TABLE tools ADD COLUMN {c} TEXT")
+    if "deprecated" not in cols: con.execute("ALTER TABLE tools ADD COLUMN deprecated INTEGER DEFAULT 0")
     if not con.execute("SELECT 1 FROM sqlite_master WHERE name='tools_fts'").fetchone():
         con.executescript(FTS_TRIGGERS)
     con.commit()
@@ -116,8 +117,12 @@ def fts(con, q):
     terms = " OR ".join('"%s"'%t for t in re.findall(r"[A-Za-z0-9_./+-]+", q))
     if not terms: return []
     try:
+        # rank verified BEFORE unverified, and deprecated LAST — so the trustworthy entry surfaces
+        # first even when FTS relevance ties (an unverified entry once outranked a verified one for
+        # the same query, sending people to the worse record) (ont-fm 2026-08-16).
         return con.execute("SELECT t.* FROM tools_fts f JOIN tools t ON t.rowid=f.rowid "
-                           "WHERE tools_fts MATCH ? ORDER BY rank", (terms,)).fetchall()
+                           "WHERE tools_fts MATCH ? "
+                           "ORDER BY COALESCE(t.deprecated,0) ASC, t.verified DESC, rank", (terms,)).fetchall()
     except sqlite3.OperationalError:
         return []
 
@@ -128,6 +133,10 @@ def cmd_find(a):
         print(f"no tool matches '{a.query}'. If you locate/install one, register it: `lab tool add`.")
         sys.exit(1)   # non-zero so a script won't assume a tool exists
     for r in rows:
+        if r["deprecated"]:
+            repl = f" — use '{r['related']}'" if r["related"] else ""
+            print(f"[✗] {r['id']:<20} DEPRECATED{repl}  (do not use this record; {(r['description'] or '')[:40]})")
+            continue
         vv = "✓" if r["verified"] else "·"
         vtag = ""
         if r["verified"]:
@@ -154,10 +163,15 @@ def cmd_list(a):
     if a.tag:  where.append("lower(tags) LIKE ?"); args.append(f"%{a.tag.lower()}%")
     if a.kind: where.append("lower(kind) = ?");    args.append(a.kind.lower())
     if where: sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id"
+    sql += " ORDER BY COALESCE(deprecated,0) ASC, id"   # deprecated entries sink to the bottom
     rows = con.execute(sql, args).fetchall()
-    print(f"{len(rows)} tool(s):")
+    ndep = sum(1 for r in rows if r["deprecated"])
+    print(f"{len(rows)} tool(s)" + (f" ({ndep} deprecated)" if ndep else "") + ":")
     for r in rows:
+        if r["deprecated"]:
+            print(f"[✗] {r['id']:<22} {'DEPRECATED':<10} " +
+                  (f"use '{r['related']}'" if r["related"] else "(retired)"))
+            continue
         vv = "✓" if r["verified"] else "·"
         print(f"[{vv}] {r['id']:<22} {(r['kind'] or ''):<10} {(r['description'] or '')[:52]:<52} @ {(r['path'] or '')[:34]}")
 
@@ -235,6 +249,26 @@ def cmd_mv(a):
                     (a.path, who, now(), idv)); con.commit()
     print(f"lab tool: moved '{idv}'  {old}  ->  {a.path}")
 
+def cmd_deprecate(a):
+    # Retire an entry WITHOUT deleting it (so its id still resolves for anything that --related-linked
+    # it) — a proper verb instead of hacking the name/description into a redirect (ont-fm 2026-08-16).
+    idv = pkey(a.id); who = a.by or resolve_self() or "unknown"
+    with WriteLock():
+        con = connect()
+        row = con.execute("SELECT added_by FROM tools WHERE id=?", (idv,)).fetchone()
+        if not row: die(f"no tool id '{idv}'", 3)
+        if row["added_by"] and row["added_by"] != who:
+            print(f"note: '{idv}' was registered by {row['added_by']}; make sure they agree it's superseded.", file=sys.stderr)
+        repl = pkey(a.replacement) if a.replacement else None
+        if repl and not con.execute("SELECT 1 FROM tools WHERE id=?", (repl,)).fetchone():
+            print(f"note: replacement '{repl}' is not a registered tool id.", file=sys.stderr)
+        sets = {"deprecated": 1, "updated_by": who, "updated": now()}
+        if repl: sets["related"] = repl
+        con.execute(f"UPDATE tools SET {','.join(k+'=?' for k in sets)} WHERE id=?",
+                    list(sets.values())+[idv]); con.commit()
+    print(f"lab tool: deprecated '{idv}'" + (f" -> use '{repl}'" if repl else "") +
+          " (kept so its id still resolves; find/list rank it last and flag it, audit ignores it)")
+
 # ---------- snapshot / maintenance (cron + on-demand; NOT on write path) ----------
 def cmd_render(a):
     con = connect(); rows = con.execute("SELECT * FROM tools ORDER BY id").fetchall()
@@ -261,13 +295,15 @@ def cmd_export(a):
 
 def cmd_audit(a):
     con = connect()
-    rows = con.execute("SELECT id,path,verified,verified_by,verified_at,updated_by FROM tools").fetchall()
+    allrows = con.execute("SELECT id,path,verified,verified_by,verified_at,updated_by,deprecated FROM tools").fetchall()
+    rows = [r for r in allrows if not r["deprecated"]]   # deprecated entries are retired, not active problems
+    ndep = len(allrows) - len(rows)
     # stat() only — never walks a tree. A path may be a binary, a script, an env prefix, or a repo dir.
     missing = [r for r in rows if r["path"] and not os.path.exists(r["path"])]
     unver   = [r for r in rows if not r["verified"]]
     stale   = [r for r in rows if r["verified"] and _stale(r["verified_at"])]   # verified long ago = false confidence
-    print(f"audit: {len(rows)} tools · {len(missing)} MISSING paths · {len(unver)} unverified · "
-          f"{len(stale)} stale-verify (>{VERIFY_STALE_DAYS}d)")
+    print(f"audit: {len(rows)} active tools ({ndep} deprecated) · {len(missing)} MISSING paths · "
+          f"{len(unver)} unverified · {len(stale)} stale-verify (>{VERIFY_STALE_DAYS}d)")
     for r in missing: print(f"  MISSING  {r['id']:<22} {r['path']}   (by {r['updated_by']})")
     if missing: print("  ↳ a MISSING path is often ALSO hard-coded in job scripts/pipelines — check anything "
                       "that references it, not just the registry record (this has caught a queued job before it burned compute).")
@@ -296,6 +332,8 @@ def build_parser():
     s=sub.add_parser("add");  s.add_argument("--id", required=True); add_write(s); s.set_defaults(fn=cmd_add)
     s=sub.add_parser("update"); s.add_argument("id"); add_write(s); s.set_defaults(fn=cmd_update)
     s=sub.add_parser("mv"); s.add_argument("id"); s.add_argument("path"); s.add_argument("--by"); s.set_defaults(fn=cmd_mv)
+    s=sub.add_parser("deprecate"); s.add_argument("id"); s.add_argument("--for", dest="replacement", help="replacement tool id")
+    s.add_argument("--by"); s.set_defaults(fn=cmd_deprecate)
     s=sub.add_parser("render"); s.set_defaults(fn=cmd_render)
     s=sub.add_parser("export"); s.set_defaults(fn=cmd_export)
     s=sub.add_parser("audit");  s.set_defaults(fn=cmd_audit)
