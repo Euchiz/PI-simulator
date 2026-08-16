@@ -67,7 +67,13 @@ cmd_inbox() {
 cmd_read() {
   ensure_init
   reconcile_self   # if this session was renamed, its mail follows it before we read
-  local n; n="$(pkey "${1:-$(resolve_self)}")"; [ -n "$n" ] || die "usage: lab read <project>"
+  local self; self="$(pkey "$(resolve_self || true)")"
+  local n; n="$(pkey "${1:-$self}")"; [ -n "$n" ] || die "usage: lab read <project>"
+  # Only CONSUME your OWN inbox. Reading someone ELSE's inbox PEEKS (shows, leaves unread): on
+  # 2026-08-13 a background poll running `lab read manager` from another session consumed the
+  # manager's mail and a message stalled 13h. A cross-inbox read must NEVER mark another's mail read.
+  local consume=1
+  [ -n "${1:-}" ] && [ "$n" != "$self" ] && consume=0
   local any=0
   mkdir -p "$INBOX/$n/.read"   # ad-hoc inboxes (e.g. codex replies to an unregistered name) lack it
   for f in "$INBOX/$n"/*.md; do
@@ -75,9 +81,12 @@ cmd_read() {
     echo "════════════════════════════════════════"
     cat "$f"
     echo
-    mv "$f" "$INBOX/$n/.read/"
+    [ "$consume" = 1 ] && mv "$f" "$INBOX/$n/.read/"
   done
-  [ "$any" = 1 ] || echo "[$n] inbox empty"
+  if [ "$any" != 1 ]; then echo "[$n] inbox empty"
+  elif [ "$consume" = 0 ]; then
+    echo "(peeked '$n' — NOT your inbox, so its mail is left UNREAD; only the owner's own \`lab read\` consumes it)"
+  fi
 }
 
 # Emit one line describing a message file (stdout line = one Monitor event).
