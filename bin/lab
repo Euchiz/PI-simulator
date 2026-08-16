@@ -86,6 +86,11 @@ lab — software/tool registry (path + how-to-run, so you never disk-scan for a 
 Register a tool the moment you get it working — id, name, the EXACT invocation, what it does,
 and its env/gotchas. `--verified` means you actually ran it. This is the index; querying it
 replaces walking NFS (a broad `find` once ran 25.9h and degraded the node for everyone).
+
+Phrase --gotchas FAILURE-FIRST — the failure and its trigger, not just the fix. "crashes with
+np.int unless PYTHONNOUSERSITE=1" beats "numpy<1.24 pinned": a statement that is true in isolation
+reads as a guarantee and gets misused, and failure-first is what someone hitting the problem will
+actually search for. (Both registry traps so far were "true in isolation, misleading in use".)
 EOF
 ;;
     claim|claims|knowledge|know|facts|branch) cat <<'EOF'
