@@ -183,6 +183,15 @@ def cmd_add(a):
                 f"  • SAME tool, correcting it        -> lab tool update {vals['id']} …   (this OVERWRITES those fields)\n"
                 f"  • DIFFERENT checkout/copy/version -> add a SIBLING under a distinct id, e.g. --id {vals['id']}-<variant>,\n"
                 f"                                       and link them: --related {vals['id']}   (both stay, both show in `find`)", 4)
+        # soft duplicate nudge (NON-blocking): a DIFFERENT id that is a name-substring either way is
+        # often the SAME tool registered twice — two sessions raced on ShapeMapper (2026-08-14), 68s
+        # apart, neither saw the other. Warn so the 2nd registrant can --related/update, not duplicate.
+        nid = vals["id"]
+        if len(nid) >= 4:
+            for s in con.execute("SELECT id, description FROM tools WHERE id != ? AND length(id) >= 4 "
+                                 "AND (? LIKE '%'||id||'%' OR id LIKE '%'||?||'%')", (nid, nid, nid)).fetchall()[:3]:
+                print(f"note: existing entry '{s['id']}' ({(s['description'] or '')[:44]}) has a similar name — "
+                      f"same tool? consider --related {s['id']} or `lab tool update`, not a duplicate.", file=sys.stderr)
         cols=[c for c in COLS]
         con.execute(f"INSERT INTO tools ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
                     [vals.get(c) for c in cols])
