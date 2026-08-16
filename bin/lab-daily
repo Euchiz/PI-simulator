@@ -54,6 +54,12 @@ is fine and needs no flag.
 Worth flagging (coordination): a session marked working but untouched >24h (possibly
 stalled), blocked/failed/errored states that look stuck, a session waiting on a message
 that isn't coming, unread inbox backlog, or board items aging unresolved.
+A `lab note` / board broadcast is an ANNOUNCEMENT, not an outstanding ask — never read a
+session as "blocked waiting on a reply" because it posted a finding to the board. Infer
+"waiting on a reply" ONLY from an actual unanswered DIRECT message (an ask sent to a
+specific inbox), never from a blocked state alone: a session frequently reads as "blocked"
+just because its turn ended, not because it is stuck. When a block's cause is unclear,
+phrase it as "verify whether X is really blocked", not as a definite waiting-on-reply.
 Worth flagging (node/compute): a disk over ~90% full or nearly out of free space,
 sustained load far above the core count, memory near exhaustion, a GPU error, or an
 external-reviewer daemon that is DOWN.
