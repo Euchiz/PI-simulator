@@ -23,7 +23,8 @@ A tree | grep -q "1.1.2  a leaf  \[proposed\]" || fail "seed/tree must render th
 ok "seed: dotted headings -> aim rows, all proposed"
 
 # 2) log a result onto a node = a claim underneath; evidence shows it
-A log 1.1.2 --result "leaf result X" --setting "some setting" --status holds >/dev/null
+#    (holds now requires the 'no card, no holds' gate; --no-card waives it for this fixture)
+A log 1.1.2 --result "leaf result X" --setting "some setting" --status holds --no-card "test fixture" >/dev/null
 A show 1.1.2 | grep -q "leaf result X" || fail "aim show must list the logged evidence"
 ok "log: result attaches as evidence under the aim"
 

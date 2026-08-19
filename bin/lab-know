@@ -137,8 +137,12 @@ def ensure_schema(con):
     CREATE INDEX IF NOT EXISTS ix_edge_dst ON edge(dst);
     """)
     # aim migration: claim.aim column (must exist BEFORE the FTS references new.aim)
-    if "aim" not in [r[1] for r in con.execute("PRAGMA table_info(claim)")]:
+    ccols = [r[1] for r in con.execute("PRAGMA table_info(claim)")]
+    if "aim" not in ccols:
         con.execute("ALTER TABLE claim ADD COLUMN aim TEXT")
+    # experiment-card pointers: card = absolute path to the CARD.md; card_waiver = --no-card reason
+    if "card" not in ccols:        con.execute("ALTER TABLE claim ADD COLUMN card TEXT")
+    if "card_waiver" not in ccols: con.execute("ALTER TABLE claim ADD COLUMN card_waiver TEXT")
     con.execute("CREATE INDEX IF NOT EXISTS ix_claim_aim ON claim(aim)")
     con.execute("CREATE INDEX IF NOT EXISTS ix_aimhist ON aim_history(aim_id)")
     ft = con.execute("SELECT sql FROM sqlite_master WHERE name='claim_fts'").fetchone()
@@ -171,6 +175,9 @@ def fmt_hit(con, r, verbose=False):
     if r["branch"]: sub += f"  · branch: {r['branch']}"
     meta = "      " + " · ".join(x for x in (r["kind"], r["source"], r["date"], r["author"]) if x)
     out = [line, sub, meta]
+    if r["card"]:                    out.append(f"      card: {r['card']}")
+    elif r["card_waiver"]:           out.append(f"      card: waived — {r['card_waiver']}")
+    elif r["kind"] == "result" and r["status"] == "holds": out.append("      card: none")
     if r["status"] != "holds":
         why = r["status_reason"] or ""
         succ = successor(con, r["id"])
@@ -217,8 +224,10 @@ def cmd_show(a):
     con = connect(); r = get(con, a.id)
     print(f"[{badge(r['status'])}] {r['id']}")
     print(f"  {r['statement']}")
-    for k in ("kind","setting","evidence","branch","source","author","date","status_reason"):
+    for k in ("kind","setting","evidence","branch","aim","source","author","date","status_reason"):
         if r[k]: print(f"  {k:<8}: {r[k]}")
+    if r["card"]:        print(f"  card    : {r['card']}" + ("" if os.path.isfile(r["card"]) else "   ⚠ MISSING"))
+    elif r["card_waiver"]: print(f"  card    : waived — {r['card_waiver']}")
     if r["verified"]: print(f"  verified: yes — {r['verified_how'] or ''}")
     if r["detail"]: print(f"  detail  : {r['detail']}")
     out = con.execute("SELECT rel,dst,note FROM edge WHERE src=? ORDER BY rel", (a.id,)).fetchall()
@@ -312,14 +321,20 @@ def cmd_retract(a):
 
 def cmd_confirm(a):
     if a.status not in STATUSES: die(f"status must be one of {STATUSES}")
+    con0 = connect(); r0 = con0.execute("SELECT kind,status FROM claim WHERE id=?", (a.id,)).fetchone()
+    if not r0: die(f"no claim '{a.id}'")
+    card, waiver = None, None
+    if a.status == "holds" and r0["kind"] == "result":   # 'no card, no holds' — results only
+        card, waiver = _card_gate(a)
     with WriteLock():
         con = connect(); r = get(con, a.id)
         if r["status"] != "open":
             die(f"claim {a.id} is '{r['status']}', not 'open' — confirm is for unconfirmed auto-extracted claims")
-        con.execute("UPDATE claim SET status=?, status_reason=?, updated=? WHERE id=?",
-                    (a.status, a.reason, now(), a.id))
+        con.execute("UPDATE claim SET status=?, status_reason=?, card=COALESCE(?,card), card_waiver=?, updated=? WHERE id=?",
+                    (a.status, a.reason, card, waiver, now(), a.id))
         con.commit()
-    print(f"claim {a.id} confirmed -> {a.status}")
+    print(f"claim {a.id} confirmed -> {a.status}" +
+          (f"  (card: {os.path.basename(card)})" if card else f"  (no-card: {waiver})" if waiver else ""))
 
 def cmd_link(a):
     with WriteLock():
@@ -455,15 +470,19 @@ def cmd_aim_log(a):
     if not a.setting: die("--setting is REQUIRED (the conditions that produced this result)")
     status = a.status or "open"
     if status not in STATUSES: die(f"status must be one of {STATUSES}")
+    card, waiver = None, None
+    if status == "holds":                      # 'no card, no holds' — aim log always creates a result
+        card, waiver = _card_gate(a)
     with WriteLock():
         con = connect(); _aim_get(con, a.id)
         cid = mkid(con, a.result, a.setting); t = now()
-        con.execute("""INSERT INTO claim(id,statement,kind,status,setting,evidence,source,author,date,aim,created,updated)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        con.execute("""INSERT INTO claim(id,statement,kind,status,setting,evidence,source,author,date,aim,card,card_waiver,created,updated)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (cid, a.result, "result", status, a.setting, a.evidence, a.source,
-                     resolve_self() or "unknown", a.date, a.id, t, t))
+                     resolve_self() or "unknown", a.date, a.id, card, waiver, t, t))
         con.commit()
-    print(f"logged claim {cid} onto aim {a.id}  [{status}]")
+    print(f"logged claim {cid} onto aim {a.id}  [{status}]" +
+          (f"  (card: {os.path.basename(card)})" if card else f"  (no-card: {waiver})" if waiver else ""))
 
 def cmd_aim_link(a):    # attach an EXISTING claim to an aim (the manager's claim->aim linking pass)
     with WriteLock():
@@ -696,6 +715,124 @@ def cmd_maint(a):
     cmd_aim_render(argparse.Namespace(out=None, fragment=False))
     cmd_aim_render(argparse.Namespace(out=None, fragment=True))
 
+# ---------- EXPERIMENT CARDS (repo-resident markdown; the ledger stores only a pointer) ----------
+CARD_SECTIONS = ("Setup", "Implementation", "Outcome", "Limitations")
+SCRIPT_EXT = (".py",".sh",".r",".rscript",".ipynb",".pl",".jl",".bash",".smk",".nf",".do")
+OUTPUT_EXT = (".tsv",".csv",".parquet",".npy",".npz",".png",".pdf",".svg",".bam",".h5",".hdf5",
+              ".json",".txt",".bed",".vcf",".fa",".fasta",".pkl",".feather",".jsonl",".gz")
+CARD_TEMPLATE = """# CARD: __TITLE__
+claims: __CLAIMS__    aim: __AIM__    author: __AUTHOR__    date: __DATE__
+
+## Question
+<!-- what this experiment tests (tie to the aim) -->
+
+## Setup
+__SETTING__
+
+## Implementation
+<!-- scripts (path + git commit), env (conda env / key versions), how it was run -->
+
+## Outcome
+<!-- results + numbers; PATHS to output data/artifacts (.tsv/.parquet/.png …) -->
+
+## Limitations
+<!-- caveats, uncontrolled confounds, scope bounds, what this does NOT show -->
+
+## Repro
+<!-- exact commands to regenerate -->
+"""
+
+def _card_paths(text):
+    # path-like tokens (with or without a dir) — bare version numbers etc. are extracted too but get
+    # filtered out by the script/output extension sets + the existence check, so no false pass.
+    return [t.strip("`'\"()<>[],;") for t in re.findall(r"[~./\w-]+\.[A-Za-z0-9]+", text)]
+def _resolve(card_dir, p):
+    p = os.path.expanduser(p)
+    return p if os.path.isabs(p) else os.path.normpath(os.path.join(card_dir, p))
+
+def card_check(path):
+    """(ok, errors, warnings) per the validation floor. stat() only — never walks a tree."""
+    if not os.path.isfile(path): return False, [f"card file not found: {path}"], []
+    text = open(path, encoding="utf-8", errors="replace").read()
+    cdir = os.path.dirname(os.path.abspath(path)); errs, warns = [], []
+    if not re.search(r"^\s*claims?\s*:", text, re.M) and not re.search(r"\baim\s*:", text):
+        errs.append("missing a 'claims:' / 'aim:' header line")
+    for sec in CARD_SECTIONS:
+        m = re.search(rf"^#+\s*{sec}\b(.*?)(?=^#+\s|\Z)", text, re.M | re.S)
+        if not m: errs.append(f"missing section: ## {sec}")
+        elif len(re.sub(r"<!--.*?-->", "", m.group(1), flags=re.S).replace("—","").strip()) < 8:
+            errs.append(f"section ## {sec} is empty (still the template stub)")
+    for sec in ("Question", "Repro"):
+        if not re.search(rf"^#+\s*{sec}\b", text, re.M): warns.append(f"recommended section absent: ## {sec}")
+    paths = _card_paths(text)
+    scripts = [p for p in paths if p.lower().endswith(SCRIPT_EXT)]
+    outputs = [p for p in paths if p.lower().endswith(OUTPUT_EXT)]
+    if not scripts: errs.append("no script path found (need ≥1, e.g. a .py/.sh in Implementation)")
+    elif not any(os.path.exists(_resolve(cdir, p)) for p in scripts):
+        errs.append(f"no script path exists on disk (checked {len(scripts)}: {scripts[:2]})")
+    if not outputs: errs.append("no output-data path found (need ≥1, e.g. a .tsv/.parquet/.png in Outcome)")
+    elif not any(os.path.exists(_resolve(cdir, p)) for p in outputs):
+        errs.append(f"no output path exists on disk (checked {len(outputs)}: {outputs[:2]})")
+    return (not errs), errs, warns
+
+def _card_of(con, claim_id):
+    r = con.execute("SELECT card FROM claim WHERE id=?", (claim_id,)).fetchone()
+    return r["card"] if r else None
+
+def cmd_card_new(a):
+    con = connect()
+    title, claims, aim_id, setting = a.title or "", a.claim or "", a.aim or "", ""
+    if a.claim:
+        r = con.execute("SELECT statement, setting, aim FROM claim WHERE id=?", (a.claim,)).fetchone()
+        if r:
+            title = title or r["statement"]; setting = r["setting"] or ""; aim_id = aim_id or (r["aim"] or "")
+    d = os.path.abspath(os.path.expanduser(a.dir)); os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "CARD.md")
+    if os.path.exists(path) and not a.force: die(f"{path} exists (use --force to overwrite)")
+    text = (CARD_TEMPLATE.replace("__TITLE__", title[:90]).replace("__CLAIMS__", claims)
+            .replace("__AIM__", aim_id).replace("__AUTHOR__", resolve_self() or "unknown")
+            .replace("__DATE__", now()[:10])
+            .replace("__SETTING__", setting or "<!-- data/samples/config; the claim's SETTING + what's held constant -->"))
+    with open(path, "w", encoding="utf-8") as f: f.write(text)
+    print(f"scaffolded {path} — fill Implementation/Outcome (real script + output paths), then: lab card check {path}")
+
+def cmd_card_check(a):
+    arg = a.target
+    path = arg if os.path.isfile(arg) else _card_of(connect(), arg)
+    if not path: die(f"'{arg}' is neither a card file nor a claim with a card pointer")
+    ok, errs, warns = card_check(path)
+    for w in warns: print(f"  warn: {w}")
+    if ok: print(f"OK: {path} passes the card floor" + (f" ({len(warns)} warning)" if warns else ""))
+    else:
+        print(f"FAIL: {path}"); [print(f"  - {e}") for e in errs]; sys.exit(1)
+
+def cmd_card_show(a):
+    con = connect(); path = _card_of(con, a.claim_id)
+    if not path: die(f"claim '{a.claim_id}' has no card")
+    if not os.path.isfile(path): die(f"card pointer is broken: {path} (file missing)")
+    sys.stdout.write(open(path, encoding="utf-8", errors="replace").read())
+
+def cmd_link_card(a):
+    ok, errs, warns = card_check(a.path)
+    for w in warns: print(f"  warn: {w}", file=sys.stderr)
+    if not ok: die("card failed `lab card check`:\n  " + "\n  ".join(errs))
+    with WriteLock():
+        con = connect(); get(con, a.claim_id)
+        con.execute("UPDATE claim SET card=?, card_waiver=NULL, updated=? WHERE id=?",
+                    (os.path.abspath(os.path.expanduser(a.path)), now(), a.claim_id)); con.commit()
+    print(f"linked card -> {a.claim_id}")
+
+def _card_gate(a):
+    # 'no card, no holds' for result->holds. Returns (card_abspath|None, waiver|None) or dies.
+    if getattr(a, "card", None):
+        ok, errs, warns = card_check(a.card)
+        for w in warns: print(f"  warn: {w}", file=sys.stderr)
+        if not ok: die("card failed `lab card check` — fix it, or use --no-card '<reason>':\n  " + "\n  ".join(errs))
+        return os.path.abspath(os.path.expanduser(a.card)), None
+    if getattr(a, "no_card", None): return None, a.no_card
+    die("'no card, no holds': promoting a RESULT to `holds` needs --card <CARD.md> (passing `lab card check`)\n"
+        "  or --no-card '<reason>' (recorded). Insights/lessons/decisions/facts are exempt; retraction never needs one.")
+
 def build_parser():
     p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -724,6 +861,15 @@ def build_parser():
 
     c = sub.add_parser("confirm"); c.set_defaults(fn=cmd_confirm)
     c.add_argument("id"); c.add_argument("--status", required=True); c.add_argument("--reason")
+    c.add_argument("--card"); c.add_argument("--no-card", dest="no_card")   # 'no card, no holds' gate
+
+    lc = sub.add_parser("link-card"); lc.add_argument("claim_id"); lc.add_argument("path"); lc.set_defaults(fn=cmd_link_card)
+
+    cd = sub.add_parser("card"); cds = cd.add_subparsers(dest="cardcmd", required=True)
+    cn = cds.add_parser("new"); cn.add_argument("dir"); cn.add_argument("--claim"); cn.add_argument("--aim")
+    cn.add_argument("--title"); cn.add_argument("--force", action="store_true"); cn.set_defaults(fn=cmd_card_new)
+    cc = cds.add_parser("check"); cc.add_argument("target", help="a CARD.md path or a claim-id"); cc.set_defaults(fn=cmd_card_check)
+    cs = cds.add_parser("show"); cs.add_argument("claim_id"); cs.set_defaults(fn=cmd_card_show)
 
     sub.add_parser("review").set_defaults(fn=cmd_review)
     sub.add_parser("facts").set_defaults(fn=cmd_facts)
@@ -743,7 +889,9 @@ def build_parser():
     ash = ams.add_parser("show"); ash.add_argument("id"); ash.set_defaults(fn=cmd_aim_show)
     al = ams.add_parser("log"); al.add_argument("id"); al.add_argument("--result", required=True)
     al.add_argument("--setting", required=True); al.add_argument("--evidence"); al.add_argument("--source")
-    al.add_argument("--status"); al.add_argument("--date"); al.set_defaults(fn=cmd_aim_log)
+    al.add_argument("--status"); al.add_argument("--date")
+    al.add_argument("--card"); al.add_argument("--no-card", dest="no_card")   # 'no card, no holds' gate
+    al.set_defaults(fn=cmd_aim_log)
     aln = ams.add_parser("link"); aln.add_argument("claim_id"); aln.add_argument("aim_id"); aln.set_defaults(fn=cmd_aim_link)
     apr = ams.add_parser("propose"); apr.add_argument("op", choices=list(AIM_OPS)); apr.add_argument("id")
     apr.add_argument("--title"); apr.add_argument("--verdict"); apr.add_argument("--why"); apr.add_argument("--note")

@@ -106,6 +106,8 @@ lab — knowledge map / claims ledger (scientific STATE: results, nulls, decisio
   lab claim retract <id> --reason "…" [--superseded-by NEWID]
   lab claim list [--branch B] [--status S] [--kind K] [--author A] [--all]
   lab claim confirm <id> --status holds|null|… [--reason]   Confirm an auto-extracted (open) claim
+                                     ('no card, no holds': result→holds needs --card <CARD.md> or --no-card "why")
+  lab claim link-card <id> <path>  Attach an experiment card to a claim (runs `lab card check` first)
   lab claim review                 Batch view of open/unconfirmed claims to confirm
   lab branch list|show <name>|set <name> --status … --mechanism … --end-condition …
   lab branch map                   Exploration tree: branches × status + counts (holds/null/retracted)
@@ -119,6 +121,16 @@ AIMS TREE (Zac's project mind map — the prescriptive program; claims are the e
   lab aim set <id> --verdict … --why … --approved-by zac     Live fast path (refuses without approval)
   lab aim propose <op> <id> … --rationale …  Queue a tree edit; lab aim pending | approve <pid> --by zac | reject
   lab aim link <claim-id> <aim-id> | lab aim seed [--commit]
+
+EXPERIMENT CARDS (the trace behind a claim — setup/implementation/outcome/limitations + script & output paths):
+  lab card new <dir> [--claim <id>] [--aim <id>] [--title …]   Scaffold <dir>/CARD.md, prefilled from the claim
+  lab card check <path|claim-id>   Validate the floor: 4 core sections non-empty + ≥1 script & ≥1 output path
+                                     that stat on disk + a claims:/aim: header (stat only, never walks a tree)
+  lab card show <claim-id>         Resolve the pointer and print the card
+  THE RULE — "no card, no holds": promoting a kind=result claim to `holds` (confirm or `aim log --status holds`)
+  needs --card <CARD.md> (validated) or an explicit --no-card "<reason>" (recorded). Other kinds are exempt;
+  retraction never needs one. One card may back several claims; a claim has ≤1 card.
+
 verdict ∈ proposed|active|claimed|likely|falsified|deferred|retired. Dotted id IS the hierarchy.
 Verdicts are ASSERTED (never inferred, history kept); tree edits need Zac's approval; logging a result
 NEVER changes a verdict.
@@ -480,6 +492,7 @@ case "$cmd" in
   branch)    exec python3 "$SELF/lab-know" branch "$@";;
   facts)     exec python3 "$SELF/lab-know" facts "$@";;
   aim|aims)  exec python3 "$SELF/lab-know" aim "$@";;
+  card)      exec python3 "$SELF/lab-know" card "$@";;
   know)      exec python3 "$SELF/lab-know" "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;
