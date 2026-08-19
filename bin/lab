@@ -111,6 +111,18 @@ lab — knowledge map / claims ledger (scientific STATE: results, nulls, decisio
   lab branch map                   Exploration tree: branches × status + counts (holds/null/retracted)
   lab facts                        Settled facts (kind=settled-fact, status=holds) — "what we know"
 
+AIMS TREE (Zac's project mind map — the prescriptive program; claims are the evidence under each aim):
+  lab aim tree [--compact]         The whole tree, 1 line/node (id · title · [verdict] · evidence count)
+  lab aim show <id>                Node: verdict + why + history + evidence (status-aware) + children + pending
+  lab aim log <id> --result … --setting …   Log a result ONTO a node (= a claim underneath; the surface
+                                   agents use for results — settings/retraction/striking all reused)
+  lab aim set <id> --verdict … --why … --approved-by zac     Live fast path (refuses without approval)
+  lab aim propose <op> <id> … --rationale …  Queue a tree edit; lab aim pending | approve <pid> --by zac | reject
+  lab aim link <claim-id> <aim-id> | lab aim seed [--commit]
+verdict ∈ proposed|active|claimed|likely|falsified|deferred|retired. Dotted id IS the hierarchy.
+Verdicts are ASSERTED (never inferred, history kept); tree edits need Zac's approval; logging a result
+NEVER changes a verdict.
+
 kind ∈ result|insight|decision|settled-fact|method-lesson.  --setting is REQUIRED: the conditions
 that produced the claim (this is what keeps "retracted-under-confound vs holds-under-a-tweak" straight).
 Status/retraction are ASSERTED, never guessed; auto-extracted claims land as `open` for confirmation.
@@ -149,6 +161,7 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   DATA          lab data [check|find|add|update|show|list|mv|render|export|audit|maint]
   TOOLS         lab tool [find|show|add|update|list|mv|deprecate|render|export|audit|maint]
   KNOWLEDGE     lab claim [find|add|show|retract|list|confirm|review] · branch [map|set] · facts
+  AIMS          lab aim [tree|show|log|set|propose|pending|approve|reject|link|seed]  (Zac's project mind map)
   ANNOUNCE      lab note · board · status · digest · health
   ADMIN         lab init · register · manager · technician · projects · name · whoami · ext
 
@@ -455,6 +468,7 @@ case "$cmd" in
   claim)     exec python3 "$SELF/lab-know" "$@";;
   branch)    exec python3 "$SELF/lab-know" branch "$@";;
   facts)     exec python3 "$SELF/lab-know" facts "$@";;
+  aim|aims)  exec python3 "$SELF/lab-know" aim "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;
   note)      cmd_note "$@";;

@@ -77,23 +77,23 @@ FTS_REBUILD = """
     DROP TRIGGER IF EXISTS claim_ai; DROP TRIGGER IF EXISTS claim_ad; DROP TRIGGER IF EXISTS claim_au;
     DROP TABLE IF EXISTS claim_fts;
     CREATE VIRTUAL TABLE claim_fts USING fts5(
-      statement, detail, setting, evidence, content='claim', content_rowid='rowid');
+      statement, detail, setting, evidence, aim, content='claim', content_rowid='rowid');
     CREATE TRIGGER claim_ai AFTER INSERT ON claim BEGIN
-      INSERT INTO claim_fts(rowid,statement,detail,setting,evidence)
-      VALUES (new.rowid,new.statement,new.detail,new.setting,new.evidence);
+      INSERT INTO claim_fts(rowid,statement,detail,setting,evidence,aim)
+      VALUES (new.rowid,new.statement,new.detail,new.setting,new.evidence,new.aim);
     END;
     CREATE TRIGGER claim_ad AFTER DELETE ON claim BEGIN
-      INSERT INTO claim_fts(claim_fts,rowid,statement,detail,setting,evidence)
-      VALUES ('delete',old.rowid,old.statement,old.detail,old.setting,old.evidence);
+      INSERT INTO claim_fts(claim_fts,rowid,statement,detail,setting,evidence,aim)
+      VALUES ('delete',old.rowid,old.statement,old.detail,old.setting,old.evidence,old.aim);
     END;
     CREATE TRIGGER claim_au AFTER UPDATE ON claim BEGIN
-      INSERT INTO claim_fts(claim_fts,rowid,statement,detail,setting,evidence)
-      VALUES ('delete',old.rowid,old.statement,old.detail,old.setting,old.evidence);
-      INSERT INTO claim_fts(rowid,statement,detail,setting,evidence)
-      VALUES (new.rowid,new.statement,new.detail,new.setting,new.evidence);
+      INSERT INTO claim_fts(claim_fts,rowid,statement,detail,setting,evidence,aim)
+      VALUES ('delete',old.rowid,old.statement,old.detail,old.setting,old.evidence,old.aim);
+      INSERT INTO claim_fts(rowid,statement,detail,setting,evidence,aim)
+      VALUES (new.rowid,new.statement,new.detail,new.setting,new.evidence,new.aim);
     END;
-    INSERT INTO claim_fts(rowid,statement,detail,setting,evidence)
-      SELECT rowid,statement,detail,setting,evidence FROM claim;
+    INSERT INTO claim_fts(rowid,statement,detail,setting,evidence,aim)
+      SELECT rowid,statement,detail,setting,evidence,aim FROM claim;
 """
 
 def ensure_schema(con):
@@ -119,12 +119,30 @@ def ensure_schema(con):
     CREATE TABLE IF NOT EXISTS branch(
       name TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'open',
       mechanism TEXT, end_condition TEXT, updated_by TEXT, updated TEXT NOT NULL);
+    -- AIMS TREE layer: aims are the prescriptive program; claims (with claim.aim set) are the
+    -- evidence log under each. Dotted id IS the hierarchy (parent = id minus last segment).
+    CREATE TABLE IF NOT EXISTS aim(
+      id TEXT PRIMARY KEY, title TEXT, note TEXT,
+      verdict TEXT NOT NULL DEFAULT 'proposed', verdict_why TEXT, updated_by TEXT, updated TEXT);
+    CREATE TABLE IF NOT EXISTS aim_history(          -- append-only verdict/title change log
+      hid INTEGER PRIMARY KEY AUTOINCREMENT, aim_id TEXT NOT NULL,
+      old_verdict TEXT, new_verdict TEXT, why TEXT, by_who TEXT, at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS aim_pending(          -- approval queue: propose -> approve/reject -> apply
+      pid INTEGER PRIMARY KEY AUTOINCREMENT, op TEXT NOT NULL, aim_id TEXT, payload TEXT,
+      proposed_by TEXT, proposed_at TEXT, rationale TEXT,
+      status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, decided_at TEXT, decision_note TEXT);
     CREATE INDEX IF NOT EXISTS ix_claim_status ON claim(status);
     CREATE INDEX IF NOT EXISTS ix_claim_kind   ON claim(kind);
     CREATE INDEX IF NOT EXISTS ix_claim_branch ON claim(branch);
     CREATE INDEX IF NOT EXISTS ix_edge_dst ON edge(dst);
     """)
-    if not con.execute("SELECT 1 FROM sqlite_master WHERE name='claim_fts'").fetchone():
+    # aim migration: claim.aim column (must exist BEFORE the FTS references new.aim)
+    if "aim" not in [r[1] for r in con.execute("PRAGMA table_info(claim)")]:
+        con.execute("ALTER TABLE claim ADD COLUMN aim TEXT")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_claim_aim ON claim(aim)")
+    con.execute("CREATE INDEX IF NOT EXISTS ix_aimhist ON aim_history(aim_id)")
+    ft = con.execute("SELECT sql FROM sqlite_master WHERE name='claim_fts'").fetchone()
+    if not ft or "aim" not in (ft[0] or ""):     # (re)build FTS if missing or missing the aim column
         con.executescript(FTS_REBUILD)
     con.commit()
 
@@ -367,6 +385,187 @@ def cmd_branch(a):
             print(f"  [uncur.] {name:<26} (referenced by claims, not yet curated)  {counts}")
         if not rows and not unc: print("  (no branches)")
 
+# ---------- AIMS TREE (prescriptive program; claims with claim.aim set = evidence underneath) ----------
+VERDICTS = ("proposed", "active", "claimed", "likely", "falsified", "deferred", "retired")
+AIM_OPS  = ("add-node", "set-verdict", "retitle", "note", "retire-node")
+
+def _aim_key(aid):            # natural sort for dotted ids: "1.1.2" -> (1,1,2)
+    try: return tuple(int(x) for x in aid.split("."))
+    except ValueError: return (10**9,) + tuple(ord(c) for c in aid)
+def _aim_parent(aid): return aid.rsplit(".", 1)[0] if "." in aid else None
+def _aim_get(con, aid):
+    r = con.execute("SELECT * FROM aim WHERE id=?", (aid,)).fetchone()
+    if not r: die(f"no aim '{aid}' — see `lab aim tree`")
+    return r
+def _aim_evidence(con, aid):
+    rows = con.execute("SELECT * FROM claim WHERE aim=? ORDER BY created", (aid,)).fetchall()
+    return rows, sum(1 for r in rows if r["status"] in DEAD)
+def _record_verdict(con, aid, old, new, why, who, t):
+    con.execute("INSERT INTO aim_history(aim_id,old_verdict,new_verdict,why,by_who,at) VALUES (?,?,?,?,?,?)",
+                (aid, old, new, why, who, t))
+
+def cmd_aim_tree(a):
+    con = connect()
+    rows = sorted(con.execute("SELECT * FROM aim").fetchall(), key=lambda r: _aim_key(r["id"]))
+    if not rows: print("(no aims — seed with `lab aim seed`)"); return
+    for r in rows:
+        line = f"{'  '*r['id'].count('.')}{r['id']}  {r['title'] or ''}  [{r['verdict']}]"
+        if not a.compact:
+            ev, dead = _aim_evidence(con, r["id"])
+            if ev: line += f"  {len(ev)} ev" + (f" ({dead} retracted)" if dead else "")
+        print(line)
+
+def cmd_aim_show(a):
+    con = connect(); r = _aim_get(con, a.id)
+    print(f"AIM {r['id']}  [{r['verdict']}]  {r['title'] or ''}")
+    if r["note"]: print(f"  note: {r['note']}")
+    if r["verdict_why"]: print(f"  why:  {r['verdict_why']}  (by {r['updated_by'] or '?'} {r['updated'] or ''})")
+    hist = con.execute("SELECT * FROM aim_history WHERE aim_id=? ORDER BY hid DESC LIMIT 5", (a.id,)).fetchall()
+    if hist:
+        print("  history:")
+        for h in reversed(hist):
+            print(f"    {(h['at'] or '?')[:10]}  {h['old_verdict'] or '-'} -> {h['new_verdict']}  ({h['why'] or ''}) by {h['by_who'] or '?'}")
+    kids = sorted([x for x in con.execute("SELECT id,title,verdict FROM aim").fetchall()
+                   if _aim_parent(x["id"]) == a.id], key=lambda x: _aim_key(x["id"]))
+    if kids:
+        print("  children:")
+        for k in kids: print(f"    {k['id']}  {k['title'] or ''}  [{k['verdict']}]")
+    ev, dead = _aim_evidence(con, a.id)
+    print(f"  evidence ({len(ev)} claim(s)" + (f", {dead} not current" if dead else "") + "):")
+    for c in ev: print("  " + fmt_hit(con, c).replace("\n", "\n  "))
+    if not ev: print(f"    (none logged — `lab aim log {a.id} --result … --setting …`)")
+    pend = con.execute("SELECT * FROM aim_pending WHERE aim_id=? AND status='pending' ORDER BY pid", (a.id,)).fetchall()
+    if pend:
+        print("  PENDING edits (awaiting Zac):")
+        for p in pend: print(f"    #{p['pid']} {p['op']}: {p['payload'] or ''} — {p['rationale'] or ''} (by {p['proposed_by']})")
+
+def cmd_aim_log(a):
+    if not a.setting: die("--setting is REQUIRED (the conditions that produced this result)")
+    status = a.status or "open"
+    if status not in STATUSES: die(f"status must be one of {STATUSES}")
+    with WriteLock():
+        con = connect(); _aim_get(con, a.id)
+        cid = mkid(con, a.result, a.setting); t = now()
+        con.execute("""INSERT INTO claim(id,statement,kind,status,setting,evidence,source,author,date,aim,created,updated)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (cid, a.result, "result", status, a.setting, a.evidence, a.source,
+                     resolve_self() or "unknown", a.date, a.id, t, t))
+        con.commit()
+    print(f"logged claim {cid} onto aim {a.id}  [{status}]")
+
+def cmd_aim_link(a):    # attach an EXISTING claim to an aim (the manager's claim->aim linking pass)
+    with WriteLock():
+        con = connect(); _aim_get(con, a.aim_id); get(con, a.claim_id)
+        con.execute("UPDATE claim SET aim=?, updated=? WHERE id=?", (a.aim_id, now(), a.claim_id))
+        con.commit()
+    print(f"linked claim {a.claim_id} -> aim {a.aim_id}")
+
+def _apply_op(con, op, aim_id, payload, who, t):
+    p = payload or {}
+    if op == "add-node":
+        con.execute("INSERT OR REPLACE INTO aim(id,title,note,verdict,updated_by,updated) VALUES (?,?,?,?,?,?)",
+                    (aim_id, p.get("title"), p.get("note"), p.get("verdict", "proposed"), who, t))
+    elif op == "retitle":
+        con.execute("UPDATE aim SET title=?, updated_by=?, updated=? WHERE id=?", (p.get("title"), who, t, aim_id))
+    elif op == "note":
+        con.execute("UPDATE aim SET note=?, updated_by=?, updated=? WHERE id=?", (p.get("note"), who, t, aim_id))
+    elif op in ("set-verdict", "retire-node"):
+        new = "retired" if op == "retire-node" else p.get("verdict")
+        old = con.execute("SELECT verdict FROM aim WHERE id=?", (aim_id,)).fetchone()
+        con.execute("UPDATE aim SET verdict=?, verdict_why=?, updated_by=?, updated=? WHERE id=?",
+                    (new, p.get("why"), who, t, aim_id))
+        _record_verdict(con, aim_id, old["verdict"] if old else None, new, p.get("why"), who, t)
+
+def cmd_aim_propose(a):
+    if a.op not in AIM_OPS: die(f"op must be one of {AIM_OPS}")
+    if a.verdict and a.verdict not in VERDICTS: die(f"verdict must be one of {VERDICTS}")
+    payload = {k: v for k, v in (("title", a.title), ("verdict", a.verdict), ("why", a.why), ("note", a.note)) if v is not None}
+    with WriteLock():
+        con = connect()
+        con.execute("INSERT INTO aim_pending(op,aim_id,payload,proposed_by,proposed_at,rationale,status) "
+                    "VALUES (?,?,?,?,?,?, 'pending')",
+                    (a.op, a.id, json.dumps(payload), resolve_self() or "unknown", now(), a.rationale))
+        pid = con.execute("SELECT last_insert_rowid()").fetchone()[0]; con.commit()
+    print(f"proposed #{pid}: {a.op} on {a.id} — awaiting Zac (`lab aim approve {pid} --by zac`)")
+
+def cmd_aim_pending(a):
+    con = connect()
+    rows = con.execute("SELECT * FROM aim_pending WHERE status='pending' ORDER BY pid").fetchall()
+    if not rows: print("(no pending tree edits)"); return
+    print(f"PENDING tree edits ({len(rows)}) — Zac approves/rejects:")
+    for p in rows:
+        print(f"  #{p['pid']}  {p['op']} on {p['aim_id'] or '(new)'}  {p['payload'] or ''}")
+        print(f"       {p['rationale'] or ''}  (by {p['proposed_by']} {(p['proposed_at'] or '')[:10]})")
+
+def cmd_aim_approve(a):
+    with WriteLock():
+        con = connect()
+        p = con.execute("SELECT * FROM aim_pending WHERE pid=?", (a.pid,)).fetchone()
+        if not p: die(f"no pending #{a.pid}")
+        if p["status"] != "pending": die(f"#{a.pid} already {p['status']}")
+        t = now()
+        _apply_op(con, p["op"], p["aim_id"], json.loads(p["payload"] or "{}"), a.by, t)
+        con.execute("UPDATE aim_pending SET status='approved', decided_by=?, decided_at=?, decision_note=? WHERE pid=?",
+                    (a.by, t, a.note, a.pid))
+        con.commit()
+    print(f"approved #{a.pid} ({p['op']} on {p['aim_id']}) — applied")
+
+def cmd_aim_reject(a):
+    with WriteLock():
+        con = connect()
+        p = con.execute("SELECT status FROM aim_pending WHERE pid=?", (a.pid,)).fetchone()
+        if not p: die(f"no pending #{a.pid}")
+        if p["status"] != "pending": die(f"#{a.pid} already {p['status']}")
+        con.execute("UPDATE aim_pending SET status='rejected', decided_by=?, decided_at=?, decision_note=? WHERE pid=?",
+                    (a.by, now(), a.note, a.pid)); con.commit()
+    print(f"rejected #{a.pid} (kept for the record)")
+
+def cmd_aim_set(a):
+    # live fast path: Zac decided in-session -> apply now, record approver. Refuses without --approved-by.
+    if not a.approved_by:
+        die("`lab aim set` refuses without --approved-by (Zac's live decision). To queue for approval:\n"
+            f"  lab aim propose set-verdict {a.id} --verdict {a.verdict or '<v>'} --why '…' --rationale '…'")
+    if not a.verdict or a.verdict not in VERDICTS: die(f"--verdict must be one of {VERDICTS}")
+    with WriteLock():
+        con = connect(); r = _aim_get(con, a.id); t = now(); me = resolve_self() or "?"
+        con.execute("UPDATE aim SET verdict=?, verdict_why=?, updated_by=?, updated=? WHERE id=?",
+                    (a.verdict, a.why, f"{me} (approved-by {a.approved_by})", t, a.id))
+        _record_verdict(con, a.id, r["verdict"], a.verdict, a.why, f"{me}/approved:{a.approved_by}", t)
+        con.commit()
+    print(f"aim {a.id}: {r['verdict']} -> {a.verdict}  (approved-by {a.approved_by})")
+
+def _parse_aim_draft(path):
+    aims, cur = [], None
+    for line in open(path, encoding="utf-8", errors="replace"):
+        m = re.match(r"^#{1,6}\s*Aim\s+([\d.]+)\s*:\s*(.+?)\s*$", line)
+        if m: cur = {"id": m.group(1), "title": m.group(2), "note": None}; aims.append(cur); continue
+        n = re.match(r"^\s*-\s*Core[^:]*:\s*(.+?)\s*$", line)
+        if n and cur: cur["note"] = ((cur["note"] + " | ") if cur["note"] else "") + n.group(1)
+    return aims
+
+def cmd_aim_seed(a):
+    path = a.file or os.path.join(LAB, "decisions", "projectmindtree-draft-zac.txt")
+    if not os.path.isfile(path): die(f"seed draft not found: {path}")
+    aims = _parse_aim_draft(path)
+    if not aims: die(f"no `# Aim N: …` headings parsed from {path}")
+    con = connect()
+    have = set(r["id"] for r in con.execute("SELECT id FROM aim").fetchall())
+    new = [x for x in aims if x["id"] not in have]
+    print(f"SEED {'COMMIT' if a.commit else 'PREVIEW'} — {len(aims)} aims parsed, {len(new)} new, {len(aims)-len(new)} present")
+    newids = set(z["id"] for z in new)
+    for x in sorted(aims, key=lambda z: _aim_key(z["id"])):
+        print(f"  [{'NEW ' if x['id'] in newids else 'have'}] {x['id']:<10} {x['title'][:58]}" +
+              (f"   · {x['note'][:36]}" if x["note"] else ""))
+    if not a.commit:
+        print("\nAll seed as verdict='proposed' (manager asserts real verdicts after). Re-run with --commit."); return
+    with WriteLock():
+        con = connect(); t = now(); who = resolve_self() or "unknown"
+        for x in new:
+            con.execute("INSERT INTO aim(id,title,note,verdict,updated_by,updated) VALUES (?,?,?,'proposed',?,?)",
+                        (x["id"], x["title"], x["note"], who, t))
+        con.commit()
+    print(f"committed {len(new)} aims (proposed).")
+
 def build_parser():
     p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -405,6 +604,26 @@ def build_parser():
     b = sub.add_parser("branch"); b.set_defaults(fn=cmd_branch)
     b.add_argument("bcmd", choices=["list","show","set","map"]); b.add_argument("name", nargs="?")
     b.add_argument("--status"); b.add_argument("--mechanism"); b.add_argument("--end-condition", dest="end_condition")
+
+    am = sub.add_parser("aim"); ams = am.add_subparsers(dest="aimcmd", required=True)
+    at = ams.add_parser("tree"); at.add_argument("--compact", action="store_true"); at.set_defaults(fn=cmd_aim_tree)
+    ash = ams.add_parser("show"); ash.add_argument("id"); ash.set_defaults(fn=cmd_aim_show)
+    al = ams.add_parser("log"); al.add_argument("id"); al.add_argument("--result", required=True)
+    al.add_argument("--setting", required=True); al.add_argument("--evidence"); al.add_argument("--source")
+    al.add_argument("--status"); al.add_argument("--date"); al.set_defaults(fn=cmd_aim_log)
+    aln = ams.add_parser("link"); aln.add_argument("claim_id"); aln.add_argument("aim_id"); aln.set_defaults(fn=cmd_aim_link)
+    apr = ams.add_parser("propose"); apr.add_argument("op", choices=list(AIM_OPS)); apr.add_argument("id")
+    apr.add_argument("--title"); apr.add_argument("--verdict"); apr.add_argument("--why"); apr.add_argument("--note")
+    apr.add_argument("--rationale", required=True); apr.set_defaults(fn=cmd_aim_propose)
+    ams.add_parser("pending").set_defaults(fn=cmd_aim_pending)
+    aap = ams.add_parser("approve"); aap.add_argument("pid", type=int); aap.add_argument("--by", required=True)
+    aap.add_argument("--note"); aap.set_defaults(fn=cmd_aim_approve)
+    arj = ams.add_parser("reject"); arj.add_argument("pid", type=int); arj.add_argument("--by", required=True)
+    arj.add_argument("--note"); arj.set_defaults(fn=cmd_aim_reject)
+    ast = ams.add_parser("set"); ast.add_argument("id"); ast.add_argument("--verdict"); ast.add_argument("--why")
+    ast.add_argument("--approved-by", dest="approved_by"); ast.set_defaults(fn=cmd_aim_set)
+    asd = ams.add_parser("seed"); asd.add_argument("--file"); asd.add_argument("--commit", action="store_true")
+    asd.set_defaults(fn=cmd_aim_seed)
     return p
 
 def main(argv):
