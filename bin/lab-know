@@ -265,8 +265,21 @@ def cmd_facts(a):
         if r["setting"]: print(f"      under: {r['setting']}")
 
 def cmd_review(a):
-    """batch view of auto-extracted / unconfirmed claims (status=open) for a human to confirm."""
+    """batch view of auto-extracted / unconfirmed claims (status=open) for a human to confirm.
+    --no-card: instead list holds RESULT claims lacking BOTH a card and a waiver (the backfill queue)."""
     con = connect()
+    if getattr(a, "no_card", False):
+        rows = con.execute("""SELECT * FROM claim WHERE kind='result' AND status='holds'
+                              AND (card IS NULL OR card='') AND (card_waiver IS NULL OR card_waiver='')
+                              ORDER BY updated DESC""").fetchall()
+        if not rows:
+            print("(every holds RESULT has a card or a recorded waiver — nothing to backfill)"); return
+        print(f"HOLDS results WITHOUT a card ({len(rows)}) — backfill the load-bearing ones at your pace:")
+        print("  attach:  lab claim link-card <id> <CARD.md>   ·   waive:  lab claim confirm is past; use link-card or a note")
+        for r in rows:
+            print(f"  [{r['status'].upper()}] {r['id']}  {r['statement']}")
+            print(f"      setting: {r['setting']}  · {(r['aim'] or 'no-aim')} · {r['author'] or ''} {r['date'] or ''}")
+        return
     rows = con.execute("SELECT * FROM claim WHERE status='open' ORDER BY created DESC").fetchall()
     if not rows: print("(no open/unconfirmed claims — nothing to review)"); return
     print(f"OPEN / unconfirmed claims to review ({len(rows)}): confirm with `lab claim confirm <id> --status ...`")
@@ -714,6 +727,16 @@ def cmd_maint(a):
         print(f"  (lab-know-seed not found at {seed}; skipping re-seed)")
     cmd_aim_render(argparse.Namespace(out=None, fragment=False))
     cmd_aim_render(argparse.Namespace(out=None, fragment=True))
+    # card pointer-audit (spec §6): stat each claim.card, flag broken paths. stat only — never walks (NFS rule).
+    con = connect(); total, broken = card_audit(con)
+    if broken:
+        print(f"  ⚠ card audit: {len(broken)}/{total} claim card pointer(s) BROKEN (file missing):")
+        for cid, path in broken: print(f"      {cid} -> {path}")
+    else:
+        print(f"  card audit: {total} card pointer(s), all resolve.")
+    nbf = con.execute("""SELECT count(*) c FROM claim WHERE kind='result' AND status='holds'
+                         AND (card IS NULL OR card='') AND (card_waiver IS NULL OR card_waiver='')""").fetchone()["c"]
+    if nbf: print(f"  card backfill: {nbf} holds result(s) without a card or waiver — see `lab claim review --no-card`.")
 
 # ---------- EXPERIMENT CARDS (repo-resident markdown; the ledger stores only a pointer) ----------
 CARD_SECTIONS = ("Setup", "Implementation", "Outcome", "Limitations")
@@ -778,6 +801,12 @@ def card_check(path):
 def _card_of(con, claim_id):
     r = con.execute("SELECT card FROM claim WHERE id=?", (claim_id,)).fetchone()
     return r["card"] if r else None
+
+def card_audit(con):
+    """stat each claim.card pointer; return (total, [(claim_id, path) broken]). NEVER walks a tree."""
+    rows = con.execute("SELECT id, card FROM claim WHERE card IS NOT NULL AND card != ''").fetchall()
+    broken = [(r["id"], r["card"]) for r in rows if not os.path.isfile(r["card"])]
+    return len(rows), broken
 
 def cmd_card_new(a):
     con = connect()
@@ -871,7 +900,9 @@ def build_parser():
     cc = cds.add_parser("check"); cc.add_argument("target", help="a CARD.md path or a claim-id"); cc.set_defaults(fn=cmd_card_check)
     cs = cds.add_parser("show"); cs.add_argument("claim_id"); cs.set_defaults(fn=cmd_card_show)
 
-    sub.add_parser("review").set_defaults(fn=cmd_review)
+    rv = sub.add_parser("review"); rv.add_argument("--no-card", dest="no_card", action="store_true",
+        help="list holds RESULT claims lacking a card AND a waiver (the backfill queue)")
+    rv.set_defaults(fn=cmd_review)
     sub.add_parser("facts").set_defaults(fn=cmd_facts)
     sub.add_parser("maint").set_defaults(fn=cmd_maint)   # `lab know maint` (daily cron: re-seed + render)
 

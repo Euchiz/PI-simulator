@@ -117,4 +117,30 @@ A log 1.1.2 --result "logged holds result" --setting "s" --status holds --no-car
   || fail "aim log --status holds --no-card must succeed"
 ok "aim log honors the same 'no card, no holds' gate"
 
+# --- C2: `lab claim review --no-card` backfill queue ---------------------------
+# state so far: CL1 has a card, CL2 has a waiver, CL3 has a card (via link-card).
+# add a holds result with NEITHER -> it must be the ONLY one listed.
+K add --statement "holds result needing a card" --kind result --status open --setting "s" --id BF1 >/dev/null
+K confirm BF1 --status holds --no-card "temp" >/dev/null
+# strip the waiver so BF1 has neither card nor waiver (simulate a legacy holds)
+python3 -c "import sqlite3;sqlite3.connect('$T/knowledge.db').execute(\"UPDATE claim SET card_waiver=NULL WHERE id='BF1'\").connection.commit()" 2>/dev/null \
+  || python3 - "$T/knowledge.db" <<'PY'
+import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE claim SET card_waiver=NULL WHERE id='BF1'"); c.commit()
+PY
+out="$(K review --no-card)"
+echo "$out" | grep -q "BF1" || fail "review --no-card must list the holds result lacking card+waiver"
+echo "$out" | grep -q "CL1" && fail "review --no-card must NOT list a claim that has a card"
+echo "$out" | grep -q "CL2" && fail "review --no-card must NOT list a claim with a recorded waiver"
+ok "review --no-card lists only holds results missing BOTH card and waiver"
+
+# --- C2: maint card pointer-audit (stat only) ---------------------------------
+# CL1 has a valid card; break it by removing the file, then maint must flag it BROKEN.
+mv "$E/CARD.md" "$E/CARD.moved"
+audit="$(K maint 2>&1)"
+echo "$audit" | grep -qi "card audit" || fail "maint must run a card audit"
+echo "$audit" | grep -qi "BROKEN" || fail "maint must flag the broken CL1 pointer"
+echo "$audit" | grep -q "CL1" || fail "maint audit must name the broken claim"
+mv "$E/CARD.moved" "$E/CARD.md"    # restore so a re-run is clean
+ok "maint audits card pointers and flags broken ones (stat only)"
+
 echo "ALL CARD TESTS PASSED"
