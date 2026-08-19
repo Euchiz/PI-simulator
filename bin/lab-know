@@ -404,6 +404,16 @@ def _record_verdict(con, aid, old, new, why, who, t):
     con.execute("INSERT INTO aim_history(aim_id,old_verdict,new_verdict,why,by_who,at) VALUES (?,?,?,?,?,?)",
                 (aid, old, new, why, who, t))
 
+# verdicts that carry their WHY into the compact/injected render (conclusions worth the tokens);
+# proposed/active/retired don't (proposed = not decided, active = in progress, retired = dropped).
+WHY_VERDICTS = ("claimed", "likely", "falsified", "deferred")
+
+def _trunc(s, n=160):   # truncate at a WORD boundary with an ellipsis — never mid-word
+    s = s.strip()
+    if len(s) <= n: return s
+    cut = s[:n].rsplit(" ", 1)[0].rstrip(" ,;·-")
+    return (cut or s[:n]) + "…"
+
 def cmd_aim_tree(a):
     con = connect()
     rows = sorted(con.execute("SELECT * FROM aim").fetchall(), key=lambda r: _aim_key(r["id"]))
@@ -413,6 +423,8 @@ def cmd_aim_tree(a):
         if not a.compact:
             ev, dead = _aim_evidence(con, r["id"])
             if ev: line += f"  {len(ev)} ev" + (f" ({dead} retracted)" if dead else "")
+        if getattr(a, "why", False) and r["verdict"] in WHY_VERDICTS and r["verdict_why"]:
+            line += f" — {_trunc(r['verdict_why'], 160)}"   # whys only on concluded verdicts; word-boundary truncated
         print(line)
 
 def cmd_aim_show(a):
@@ -712,7 +724,9 @@ def build_parser():
     b.add_argument("--status"); b.add_argument("--mechanism"); b.add_argument("--end-condition", dest="end_condition")
 
     am = sub.add_parser("aim"); ams = am.add_subparsers(dest="aimcmd", required=True)
-    at = ams.add_parser("tree"); at.add_argument("--compact", action="store_true"); at.set_defaults(fn=cmd_aim_tree)
+    at = ams.add_parser("tree"); at.add_argument("--compact", action="store_true")
+    at.add_argument("--why", action="store_true", help="append verdict-why on concluded verdicts (for the injection)")
+    at.set_defaults(fn=cmd_aim_tree)
     ash = ams.add_parser("show"); ash.add_argument("id"); ash.set_defaults(fn=cmd_aim_show)
     al = ams.add_parser("log"); al.add_argument("id"); al.add_argument("--result", required=True)
     al.add_argument("--setting", required=True); al.add_argument("--evidence"); al.add_argument("--source")

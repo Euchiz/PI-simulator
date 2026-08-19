@@ -441,6 +441,17 @@ cmd_name() {
 # resume/compact). Points agents at the shared indexes (reach these, don't disk-scan) + arms delivery.
 # Edit here to change what every session sees at startup; hooks just call `lab startup`.
 cmd_startup() {
+  # LAB STATE — the aims tree (P4 SessionStart injection; Zac-greenlit A3). Read-only + idempotent,
+  # so re-injection on resume/compact is harmless. Only emitted when the aims tree exists.
+  local tree; tree="$("$SELF/lab-know" aim tree --compact --why 2>/dev/null)"
+  if [ -n "$tree" ] && ! printf '%s' "$tree" | head -1 | grep -q '^(no aims'; then
+    printf '%s\n' "== LAB STATE (auto-injected; query live, don't trust memory) ==" "$tree" \
+      "Before starting work: lab aim show <id> · Have we concluded X? lab claim find <q>" \
+      "When you get a result: lab aim log <aim-id> --result '...' --setting '...'" \
+      "Tree changes: lab aim propose ... --rationale '...' (applies only after Zac approves)" \
+      "Data: lab data check <acc> BEFORE acquiring; lab data add on finish." \
+      "Tools: lab tool find <kw> BEFORE installing/building; lab tool add when you ship one." ""
+  fi
   cat <<'EOF'
 [lab] Shared indexes — REACH FOR THESE before you disk-scan or re-derive (walking NFS is forbidden on this node):
   • lab tool find <purpose>    right software: path + exact invocation + env + gotchas    (lab help tools)
