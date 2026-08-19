@@ -79,9 +79,13 @@ cmd_read() {
   for f in "$INBOX/$n"/*.md; do
     [ -e "$f" ] || continue; any=1
     echo "════════════════════════════════════════"
-    cat "$f"
-    echo
-    [ "$consume" = 1 ] && mv "$f" "$INBOX/$n/.read/"
+    # crash-safe ordering: a message is moved to .read ONLY AFTER it prints in full. If cat fails
+    # or is interrupted, it stays in the inbox for the next read (an unseen message must never be
+    # silently consumed — the 2026-08-19 loss class). mv failure also leaves it unread.
+    if cat "$f"; then
+      echo
+      [ "$consume" = 1 ] && { mv "$f" "$INBOX/$n/.read/" 2>/dev/null || true; }
+    fi
   done
   if [ "$any" != 1 ]; then echo "[$n] inbox empty"
   elif [ "$consume" = 0 ]; then

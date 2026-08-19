@@ -56,22 +56,31 @@ session_jobid() {
 # Rename-follows-mail: if THIS session's name changed since we last saw its job id,
 # migrate its inbox old->new and rename its registry key. Keyed on the stable job id.
 reconcile_self() {
-  local jid cur old roster="$LAB_HOME/.roster.tsv"
+  local jid cur roster="$LAB_HOME/.roster.tsv"
   jid="$(session_jobid)"; cur="$(pkey "$(resolve_self || true)")"
   [ -n "$jid" ] && [ -n "$cur" ] || return 0
-  [ -f "$roster" ] && old="$(awk -F'\t' -v j="$jid" '$1==j{print $2; exit}' "$roster")" || old=""
-  if [ -n "${old:-}" ] && [ "$old" != "$cur" ]; then
-    if [ -d "$INBOX/$old" ]; then
-      mkdir -p "$INBOX/$cur/.read"
-      find "$INBOX/$old" -maxdepth 1 -name '*.md' -exec mv -n {} "$INBOX/$cur/" \; 2>/dev/null || true
-      find "$INBOX/$old/.read" -maxdepth 1 -name '*.md' -exec mv -n {} "$INBOX/$cur/.read/" \; 2>/dev/null || true
+  # SERIALIZE the roster read-modify-write. A `lab read` and a `lab watch` tick both call this and
+  # raced on a FIXED .roster.tsv.tmp: one mv won, the other died 'cannot stat .tmp' (killing the read),
+  # and a half-written .tmp could clobber the roster (which then misroutes mail). flock makes it atomic;
+  # a pid-unique temp + a non-empty guard mean a failed awk can never overwrite a good roster.
+  ( flock 9 || exit 0
+    local old; [ -f "$roster" ] && old="$(awk -F'\t' -v j="$jid" '$1==j{print $2; exit}' "$roster")" || old=""
+    if [ -n "${old:-}" ] && [ "$old" != "$cur" ]; then
+      if [ -d "$INBOX/$old" ]; then
+        mkdir -p "$INBOX/$cur/.read"
+        find "$INBOX/$old" -maxdepth 1 -name '*.md' -exec mv -n {} "$INBOX/$cur/" \; 2>/dev/null || true
+        find "$INBOX/$old/.read" -maxdepth 1 -name '*.md' -exec mv -n {} "$INBOX/$cur/.read/" \; 2>/dev/null || true
+      fi
+      sed -i "s/^- \*\*$old\*\*/- **$cur**/" "$REG" 2>/dev/null || true
+      echo "lab: session renamed '$old' -> '$cur' (job $jid); inbox + registry key migrated." >&2
     fi
-    sed -i "s/^- \*\*$old\*\*/- **$cur**/" "$REG" 2>/dev/null || true
-    echo "lab: session renamed '$old' -> '$cur' (job $jid); inbox + registry key migrated." >&2
-  fi
-  touch "$roster"
-  awk -F'\t' -v j="$jid" -v c="$cur" -v t="$(ts)" 'BEGIN{OFS="\t"} $1!=j{print} END{print j,c,t}' \
-    "$roster" > "$roster.tmp" 2>/dev/null && mv "$roster.tmp" "$roster"
+    touch "$roster"
+    if awk -F'\t' -v j="$jid" -v c="$cur" -v t="$(ts)" 'BEGIN{OFS="\t"} $1!=j{print} END{print j,c,t}' \
+         "$roster" > "$roster.$$.tmp" 2>/dev/null && [ -s "$roster.$$.tmp" ]; then
+      mv -f "$roster.$$.tmp" "$roster"
+    fi
+    rm -f "$roster.$$.tmp" 2>/dev/null
+  ) 9>"$LAB_HOME/.roster.lock"
 }
 
 ensure_init() {
