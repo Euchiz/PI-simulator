@@ -792,10 +792,15 @@ def card_check(path):
     outputs = [p for p in paths if p.lower().endswith(OUTPUT_EXT)]
     if not scripts: errs.append("no script path found (need ≥1, e.g. a .py/.sh in Implementation)")
     elif not any(os.path.exists(_resolve(cdir, p)) for p in scripts):
-        errs.append(f"no script path exists on disk (checked {len(scripts)}: {scripts[:2]})")
-    if not outputs: errs.append("no output-data path found (need ≥1, e.g. a .tsv/.parquet/.png in Outcome)")
+        errs.append(f"no script path resolves to a file on disk — a relative path resolves against the card's "
+                    f"OWN dir ({cdir}), not any parent named in the prose; use an absolute path or one relative "
+                    f"to the card. checked {len(scripts)}: {scripts[:2]}")
+    if not outputs: errs.append("no output-data path found (need ≥1 DATA artifact — .tsv/.parquet/.png etc, "
+                                "NOT a redirected stdout/.log — in Outcome)")
     elif not any(os.path.exists(_resolve(cdir, p)) for p in outputs):
-        errs.append(f"no output path exists on disk (checked {len(outputs)}: {outputs[:2]})")
+        errs.append(f"no output path resolves to a file on disk — a relative path resolves against the card's "
+                    f"OWN dir ({cdir}), not any parent named in the prose; use an absolute path or one relative "
+                    f"to the card. checked {len(outputs)}: {outputs[:2]}")
     return (not errs), errs, warns
 
 def _card_of(con, claim_id):

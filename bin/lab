@@ -126,6 +126,8 @@ EXPERIMENT CARDS (the trace behind a claim — setup/implementation/outcome/limi
   lab card new <dir> [--claim <id>] [--aim <id>] [--title …]   Scaffold <dir>/CARD.md, prefilled from the claim
   lab card check <path|claim-id>   Validate the floor: 4 core sections non-empty + ≥1 script & ≥1 output path
                                      that stat on disk + a claims:/aim: header (stat only, never walks a tree)
+                                     output = a DATA artifact (.tsv/.parquet/.png/…), NOT a redirected stdout/.log.
+                                     Paths resolve absolute, or relative to the CARD's own dir — not a parent in prose.
   lab card show <claim-id>         Resolve the pointer and print the card
   THE RULE — "no card, no holds": promoting a kind=result claim to `holds` (confirm or `aim log --status holds`)
   needs --card <CARD.md> (validated) or an explicit --no-card "<reason>" (recorded). Other kinds are exempt;
