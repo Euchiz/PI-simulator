@@ -10,7 +10,7 @@ Mirrors lab-data's proven choices: SQLite single file (~/lab/knowledge.db), FTS5
 write-mutex, rollback-journal (NFS-safe, no WAL), maintenance off the write path.
 Companion to (not a replacement for) `lab data` (find verified X) and git (code/artifacts).
 """
-import sqlite3, sys, os, re, argparse, datetime, hashlib, json
+import sqlite3, sys, os, re, argparse, datetime, hashlib, json, subprocess
 
 HOME   = os.path.expanduser("~")
 LAB    = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
@@ -684,6 +684,18 @@ def cmd_aim_render(a):
     with open(out, "w", encoding="utf-8") as f: f.write(html)
     print(f"lab aim: wrote {out} ({len(aims)} aims, {npend} pending" + (", fragment" if getattr(a,'fragment',False) else "") + ")")
 
+def cmd_maint(a):
+    # daily knowledge maintenance (spec §9): incrementally re-seed new meeting/board posts (idempotent,
+    # dedups) + refresh the aims-tree artifacts (full + fragment). The seed's inserts are the only writes.
+    print(f"=== lab know maint {datetime.datetime.now():%F %T} ===")
+    seed = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab-know-seed")
+    if os.path.isfile(seed):
+        subprocess.run([sys.executable, seed, "--commit"], env=dict(os.environ))
+    else:
+        print(f"  (lab-know-seed not found at {seed}; skipping re-seed)")
+    cmd_aim_render(argparse.Namespace(out=None, fragment=False))
+    cmd_aim_render(argparse.Namespace(out=None, fragment=True))
+
 def build_parser():
     p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -715,6 +727,7 @@ def build_parser():
 
     sub.add_parser("review").set_defaults(fn=cmd_review)
     sub.add_parser("facts").set_defaults(fn=cmd_facts)
+    sub.add_parser("maint").set_defaults(fn=cmd_maint)   # `lab know maint` (daily cron: re-seed + render)
 
     lk = sub.add_parser("link"); lk.set_defaults(fn=cmd_link)
     lk.add_argument("src"); lk.add_argument("rel"); lk.add_argument("dst"); lk.add_argument("--note")

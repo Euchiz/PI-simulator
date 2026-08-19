@@ -447,7 +447,7 @@ cmd_startup() {
   if [ -n "$tree" ] && ! printf '%s' "$tree" | head -1 | grep -q '^(no aims'; then
     printf '%s\n' "== LAB STATE (auto-injected; query live, don't trust memory) ==" "$tree" \
       "Before starting work: lab aim show <id> · Have we concluded X? lab claim find <q>" \
-      "When you get a result: lab aim log <aim-id> --result '...' --setting '...'" \
+      "When you get a result: lab aim log <aim-id> --result '...' --setting '...' · triage yours: lab claim review" \
       "Tree changes: lab aim propose ... --rationale '...' (applies only after Zac approves)" \
       "Data: lab data check <acc> BEFORE acquiring; lab data add on finish." \
       "Tools: lab tool find <kw> BEFORE installing/building; lab tool add when you ship one." ""
@@ -480,6 +480,7 @@ case "$cmd" in
   branch)    exec python3 "$SELF/lab-know" branch "$@";;
   facts)     exec python3 "$SELF/lab-know" facts "$@";;
   aim|aims)  exec python3 "$SELF/lab-know" aim "$@";;
+  know)      exec python3 "$SELF/lab-know" "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;
   note)      cmd_note "$@";;

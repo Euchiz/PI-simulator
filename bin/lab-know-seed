@@ -45,6 +45,17 @@ def clean_md(s):
     s = re.sub(r"[✅❌🔴⚠️☠️🔒⏸️🔄⏳🟢🟡➡️→]", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
+def is_fragment(s):
+    # parser debris, not a claim (wet-lab 2026-08-19): a mid-sentence selection-criteria parenthetical
+    # captured with a trailing ARROW. Keep this NARROW — an unbalanced-parens/trailing-dash test
+    # false-positives on real headlines truncated mid-paren or mid-word, so only the two genuine
+    # fragment signals: a trailing arrow, or a bare short pure-parenthetical (no verb).
+    s = (s or "").strip()
+    if not s: return True
+    if re.search(r"(->|→)\s*$", s): return True                     # trailing arrow = a mid-sentence rule
+    if s.startswith("(") and s.endswith(")") and len(s) < 50: return True   # bare short parenthetical
+    return False
+
 def status_from(cell):
     """(status, raw_verdict_or_None) from a status cell / verdict text."""
     low = clean_md(cell).lower()
@@ -181,6 +192,31 @@ def extract_branches(path, skips):
                              mechanism=clean_md(head)[:120], source=os.path.basename(path)))
     return branches
 
+# board notes demonstrably carry results (poreior's 0.675, morpheus's +0.0425 went ONLY to the board).
+# result-signal heuristic: a decimal metric or a result keyword. Notes with neither (announcements/plans)
+# are skipped + reported; the rest land status=open — the review queue is the filter (manager 2026-08-19).
+BOARD_RESULT_RE = re.compile(
+    r"\d\.\d\d|[+\-−]\s?\d*\.\d+|reproduc|negative|beats|earns|purity|auroc|spearman|\bmcc\b|slope|"
+    r"separat|\bnull\b|refut|retract|validated|significan|p[≈=]|falsif|correction", re.I)
+
+def extract_board(path, skips):
+    if not os.path.isfile(path): return []
+    text = open(path, encoding="utf-8", errors="replace").read()
+    claims = []
+    # each note: "- [ ] YYYY-MM-DD — <body…> _(from <session>)_"; body spans (non-greedy) to the closer
+    for m in re.finditer(r"^- \[[ xX]\]\s*(\d{4}-\d{2}-\d{2})\s*[—\-]\s*(.*?)_\(from\s*([^)]+)\)_",
+                         text, re.S | re.M):
+        date, body, sess = m.group(1), m.group(2).strip(), m.group(3).strip()
+        headline = clean_md(body.split("\n", 1)[0])
+        if not headline: continue
+        if not BOARD_RESULT_RE.search(body):
+            skips.append(f"BOARD.md {date} ({sess}): '{headline[:40]}' — no result signal, skipped (announcement/plan)")
+            continue
+        claims.append(dict(statement=headline[:200], kind="result", status="open",
+                           setting=f"board note, {sess}, {date}", evidence=None, status_reason=None,
+                           source=f"board:{date}#{sess}", author=sess, date=date))
+    return claims
+
 # ---------------- driver ----------------
 def existing_keys():
     """(statement, source) pairs already in the DB, to dedup re-runs."""
@@ -215,10 +251,12 @@ def main():
     ap.add_argument("--commit", action="store_true", help="actually insert (default: preview only)")
     ap.add_argument("--posts", action="store_true", help="only meeting posts")
     ap.add_argument("--decisions", action="store_true", help="only decisions/")
+    ap.add_argument("--no-board", dest="no_board", action="store_true", help="skip BOARD.md notes")
     ap.add_argument("--limit", type=int, default=0, help="cap files (for a quick look)")
     a = ap.parse_args()
     do_posts = a.posts or not a.decisions
     do_dec   = a.decisions or not a.posts
+    do_board = not a.no_board and not a.posts and not a.decisions   # board is part of the full default seed
 
     skips, claims, branches = [], [], []
     if do_posts:
@@ -230,10 +268,14 @@ def main():
         decs = sorted(glob.glob(os.path.join(LAB, "decisions", "*.md")))
         for p in decs:
             branches += extract_branches(p, skips)
+    if do_board:
+        claims += extract_board(os.path.join(LAB, "BOARD.md"), skips)
 
-    # dedup within this run and against the DB
+    # drop parser-debris fragments, then dedup within this run
     seen, uniq = set(), []
     for c in claims:
+        if is_fragment(c["statement"]):
+            skips.append(f"fragment skipped (parser debris): '{c['statement'][:48]}' [{c['source']}]"); continue
         k = (c["statement"], c["source"])
         if k in seen: continue
         seen.add(k); uniq.append(c)
