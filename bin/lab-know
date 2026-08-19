@@ -650,13 +650,27 @@ if(DATA.npending){const b=document.getElementById('pbanner');b.style.display='bl
 build('',document.getElementById('tree'));
 </script></body></html>"""
 
+def _fragment(full):
+    # claude.ai artifacts must be PAGE-CONTENT-ONLY (the platform adds doctype/head/body). Keep the
+    # <title>, <style>, and the <body> inner content; drop the doctype/html/head/body wrapper + <meta>.
+    title = re.search(r"<title>.*?</title>", full, re.S)
+    style = re.search(r"<style>.*?</style>", full, re.S)
+    body  = re.search(r"<body>(.*)</body>", full, re.S)
+    return (title.group(0) if title else "") + (style.group(0) if style else "") + \
+           (body.group(1) if body else full)
+
 def cmd_aim_render(a):
     con = connect()
     aims, npend = _render_data(con)
     blob = json.dumps({"generated": now(), "npending": npend, "aims": aims}, ensure_ascii=False).replace("</", "<\\/")
-    out = a.out or os.path.join(LAB, "AIMS_TREE.html")
-    with open(out, "w", encoding="utf-8") as f: f.write(AIMS_HTML.replace("__DATA__", blob))
-    print(f"lab aim: wrote {out} ({len(aims)} aims, {npend} pending)")
+    html = AIMS_HTML.replace("__DATA__", blob)
+    if getattr(a, "fragment", False):
+        html = _fragment(html)
+        out = a.out or os.path.join(LAB, "AIMS_TREE.artifact.html")
+    else:
+        out = a.out or os.path.join(LAB, "AIMS_TREE.html")
+    with open(out, "w", encoding="utf-8") as f: f.write(html)
+    print(f"lab aim: wrote {out} ({len(aims)} aims, {npend} pending" + (", fragment" if getattr(a,'fragment',False) else "") + ")")
 
 def build_parser():
     p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
@@ -716,7 +730,9 @@ def build_parser():
     ast.add_argument("--approved-by", dest="approved_by"); ast.set_defaults(fn=cmd_aim_set)
     asd = ams.add_parser("seed"); asd.add_argument("--file"); asd.add_argument("--commit", action="store_true")
     asd.set_defaults(fn=cmd_aim_seed)
-    arn = ams.add_parser("render"); arn.add_argument("--out"); arn.set_defaults(fn=cmd_aim_render)
+    arn = ams.add_parser("render"); arn.add_argument("--out")
+    arn.add_argument("--fragment", action="store_true", help="page-content-only (for claude.ai artifacts)")
+    arn.set_defaults(fn=cmd_aim_render)
     return p
 
 def main(argv):
