@@ -22,11 +22,13 @@ Usage:
   lab-know-seed [--posts] [--decisions] [--limit N]        # preview (default: both sources)
   lab-know-seed --commit                                   # actually insert (after review)
 """
-import os, re, sys, glob, subprocess, argparse
+import os, re, sys, glob, subprocess, argparse, datetime
 
 HOME = os.path.expanduser("~")
 LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
 KNOW = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab-know")
+BOARD_DAYS = int(os.environ.get("LAB_BOARD_DAYS", "14"))   # board notes older than this are skipped
+                                                           # (history is already covered by the meeting-post seed)
 
 # keyword -> a CLEAR retraction (auto status=retracted); anything else stays open (never auto-holds)
 RETRACT_KW = ("dead", "retracted", "retract", "withdrawn", "deleted", "refuted",
@@ -199,14 +201,16 @@ BOARD_RESULT_RE = re.compile(
     r"\d\.\d\d|[+\-−]\s?\d*\.\d+|reproduc|negative|beats|earns|purity|auroc|spearman|\bmcc\b|slope|"
     r"separat|\bnull\b|refut|retract|validated|significan|p[≈=]|falsif|correction", re.I)
 
-def extract_board(path, skips):
+def extract_board(path, skips, days=BOARD_DAYS):
     if not os.path.isfile(path): return []
     text = open(path, encoding="utf-8", errors="replace").read()
-    claims = []
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat() if days > 0 else "0000"
+    claims = []; old = 0
     # each note: "- [ ] YYYY-MM-DD — <body…> _(from <session>)_"; body spans (non-greedy) to the closer
     for m in re.finditer(r"^- \[[ xX]\]\s*(\d{4}-\d{2}-\d{2})\s*[—\-]\s*(.*?)_\(from\s*([^)]+)\)_",
                          text, re.S | re.M):
         date, body, sess = m.group(1), m.group(2).strip(), m.group(3).strip()
+        if date < cutoff: old += 1; continue                      # recency cutoff — history is covered by the post seed
         headline = clean_md(body.split("\n", 1)[0])
         if not headline: continue
         if not BOARD_RESULT_RE.search(body):
@@ -215,6 +219,7 @@ def extract_board(path, skips):
         claims.append(dict(statement=headline[:200], kind="result", status="open",
                            setting=f"board note, {sess}, {date}", evidence=None, status_reason=None,
                            source=f"board:{date}#{sess}", author=sess, date=date))
+    if old: skips.append(f"BOARD.md: {old} notes older than {days}d skipped (recency cutoff; history is in the post seed)")
     return claims
 
 # ---------------- driver ----------------
@@ -252,6 +257,8 @@ def main():
     ap.add_argument("--posts", action="store_true", help="only meeting posts")
     ap.add_argument("--decisions", action="store_true", help="only decisions/")
     ap.add_argument("--no-board", dest="no_board", action="store_true", help="skip BOARD.md notes")
+    ap.add_argument("--board-days", dest="board_days", type=int, default=BOARD_DAYS,
+                    help=f"only board notes from the last N days (default {BOARD_DAYS}; 0 = all)")
     ap.add_argument("--limit", type=int, default=0, help="cap files (for a quick look)")
     a = ap.parse_args()
     do_posts = a.posts or not a.decisions
@@ -269,7 +276,7 @@ def main():
         for p in decs:
             branches += extract_branches(p, skips)
     if do_board:
-        claims += extract_board(os.path.join(LAB, "BOARD.md"), skips)
+        claims += extract_board(os.path.join(LAB, "BOARD.md"), skips, a.board_days)
 
     # drop parser-debris fragments, then dedup within this run
     seen, uniq = set(), []
@@ -288,6 +295,9 @@ def main():
 
     print(f"SEED {'COMMIT' if a.commit else 'PREVIEW'} — {len(claims)} claim candidates, "
           f"{len(branches)} branch candidates, {len(skips)} skipped\n")
+    if a.commit:   # visibility guard: make the target DB explicit so a test can never silently hit prod
+        db = os.path.join(LAB, "knowledge.db")
+        print(f"  >>> COMMITTING to {db}" + ("   ⚠ THIS IS THE REAL LAB DB" if os.path.realpath(LAB) == os.path.realpath(os.path.join(HOME, "lab")) else "") + "\n")
     n_ret = sum(1 for c in claims if c["status"] == "retracted")
     print(f"  claims: {n_ret} retracted (from retraction tables), {len(claims)-n_ret} open (unconfirmed)\n")
 
