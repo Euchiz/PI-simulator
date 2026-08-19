@@ -566,6 +566,98 @@ def cmd_aim_seed(a):
         con.commit()
     print(f"committed {len(new)} aims (proposed).")
 
+def _render_data(con):
+    aims = sorted(con.execute("SELECT * FROM aim").fetchall(), key=lambda r: _aim_key(r["id"]))
+    pend_all = con.execute("SELECT * FROM aim_pending WHERE status='pending' ORDER BY pid").fetchall()
+    out = []
+    for a in aims:
+        ev_rows, _ = _aim_evidence(con, a["id"])
+        ev = [{"statement": c["statement"], "status": c["status"], "setting": c["setting"] or "",
+               "source": c["source"] or "", "date": c["date"] or "", "author": c["author"] or "",
+               "reason": c["status_reason"] or "", "successor": successor(con, c["id"]) or "",
+               "dead": c["status"] in DEAD} for c in ev_rows]
+        hist = [{"old": h["old_verdict"] or "", "new": h["new_verdict"] or "", "why": h["why"] or "",
+                 "by": h["by_who"] or "", "at": (h["at"] or "")[:10]} for h in
+                con.execute("SELECT * FROM aim_history WHERE aim_id=? ORDER BY hid", (a["id"],)).fetchall()]
+        pend = [{"pid": p["pid"], "op": p["op"], "payload": p["payload"] or "", "rationale": p["rationale"] or "",
+                 "by": p["proposed_by"] or ""} for p in pend_all if p["aim_id"] == a["id"]]
+        out.append({"id": a["id"], "title": a["title"] or "", "note": a["note"] or "",
+                    "verdict": a["verdict"], "why": a["verdict_why"] or "",
+                    "updated_by": a["updated_by"] or "", "updated": (a["updated"] or "")[:10],
+                    "evidence": ev, "history": hist, "pending": pend})
+    return out, len(pend_all)
+
+AIMS_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Aims Tree</title><style>
+:root{--bg:#fff;--fg:#202124;--mut:#5f6368;--line:#e0e0e0;--panel:#f8f9fa;--dead:#c0392b;--warn:#f9ab00}
+@media(prefers-color-scheme:dark){:root{--bg:#1a1a1a;--fg:#e8eaed;--mut:#9aa0a6;--line:#333;--panel:#242424;--dead:#ff7b72}}
+:root[data-theme=light]{--bg:#fff;--fg:#202124;--mut:#5f6368;--line:#e0e0e0;--panel:#f8f9fa;--dead:#c0392b}
+:root[data-theme=dark]{--bg:#1a1a1a;--fg:#e8eaed;--mut:#9aa0a6;--line:#333;--panel:#242424;--dead:#ff7b72}
+*{box-sizing:border-box}body{margin:0;font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+header{padding:12px 18px;border-bottom:1px solid var(--line)}header h1{margin:0;font-size:17px}
+#gen{font-size:12px;color:var(--mut);font-weight:400}
+.legend{margin-top:6px;font-size:12px;color:var(--mut)}.legend span{margin-right:12px;white-space:nowrap}
+.dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px;vertical-align:middle}
+#pbanner{display:none;margin:10px 18px;padding:8px 12px;background:color-mix(in srgb,var(--warn) 15%,transparent);border:1px solid var(--warn);border-radius:6px;font-size:13px}
+#wrap{display:flex;height:calc(100vh - 92px)}@media(max-width:820px){#wrap{flex-direction:column;height:auto}}
+#tree{flex:1.1;overflow:auto;padding:10px 6px}#panel{flex:1;overflow:auto;padding:16px;border-left:1px solid var(--line);background:var(--panel)}
+.children{margin-left:15px;border-left:1px dotted var(--line);padding-left:2px}.node.collapsed>.children{display:none}
+.row{display:flex;align-items:center;gap:7px;padding:3px 6px;border-left:3px solid #999;border-radius:3px;cursor:pointer}.row:hover{background:var(--panel)}.row.sel{background:color-mix(in srgb,var(--fg) 8%,transparent)}
+.tog{width:12px;text-align:center;color:var(--mut);flex:none}.id{color:var(--mut);font-variant-numeric:tabular-nums;font-size:12px;flex:none}.ttl{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{color:#fff;font-size:10px;padding:1px 6px;border-radius:8px;white-space:nowrap;flex:none}.ev{font-size:11px;color:var(--mut);flex:none}.pend{font-size:11px;color:var(--warn);font-weight:600;flex:none}
+#panel h2{font-size:16px;margin:0 0 10px}#panel h3{font-size:11px;text-transform:uppercase;color:var(--mut);margin:16px 0 6px;letter-spacing:.5px}
+.vline{margin:6px 0}.why{color:var(--fg)}.meta,.muted{color:var(--mut);font-size:12px}.note{margin:8px 0;font-style:italic;color:var(--mut)}
+.hi{font-size:12px;color:var(--mut);padding:1px 0}.pendbox{background:color-mix(in srgb,var(--warn) 12%,transparent);border:1px solid var(--warn);border-radius:6px;padding:8px 10px;margin:8px 0}.pi{font-size:12px;padding:2px 0}
+.claim{border-left:3px solid var(--line);padding:4px 10px;margin:6px 0}.claim.dead{opacity:.65}.claim.dead .cs{text-decoration:line-through}.cs{font-weight:500}.cmeta{font-size:11px;color:var(--mut)}.creason{font-size:11px;color:var(--dead)}
+</style></head><body>
+<header><h1>Aims Tree <span id="gen"></span></h1><div class="legend" id="legend"></div></header>
+<div id="pbanner"></div>
+<div id="wrap"><div id="tree"></div><div id="panel"><div class="muted">Click a node for its verdict, history, and evidence. Amber ● marks pending edits awaiting Zac.</div></div></div>
+<script>
+const DATA=__DATA__;
+const V={proposed:'#9aa0a6',active:'#4285f4',claimed:'#34a853',likely:'#12a594',falsified:'#ea4335',deferred:'#f9ab00',retired:'#77797c'};
+function el(t,c,x){const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e;}
+const kids={};function par(id){const i=id.lastIndexOf('.');return i<0?'':id.slice(0,i);}
+DATA.aims.forEach(a=>{const p=par(a.id);(kids[p]=kids[p]||[]).push(a);});
+function keyOf(id){return id.split('.').map(Number);}
+Object.values(kids).forEach(l=>l.sort((a,b)=>{const x=keyOf(a.id),y=keyOf(b.id);for(let i=0;i<Math.max(x.length,y.length);i++){const d=(x[i]||0)-(y[i]||0);if(d)return d;}return 0;}));
+let selRow=null;
+function build(pid,box){(kids[pid]||[]).forEach(a=>{
+  const node=el('div','node'),row=el('div','row');row.style.borderLeftColor=V[a.verdict]||'#999';
+  const has=(kids[a.id]||[]).length>0;
+  const tog=el('span','tog',has?'▾':'·');row.append(tog,el('span','id',a.id),el('span','ttl',a.title));
+  const bg=el('span','badge',a.verdict);bg.style.background=V[a.verdict]||'#999';row.append(bg);
+  if(a.evidence.length)row.append(el('span','ev',a.evidence.length+' ev'));
+  if(a.pending.length)row.append(el('span','pend','● '+a.pending.length));
+  row.onclick=e=>{if(e.target===tog&&has){node.classList.toggle('collapsed');tog.textContent=node.classList.contains('collapsed')?'▸':'▾';return;}if(selRow)selRow.classList.remove('sel');selRow=row;row.classList.add('sel');detail(a);};
+  node.append(row);const cb=el('div','children');build(a.id,cb);node.append(cb);box.append(node);});}
+function detail(a){
+  const p=document.getElementById('panel');p.textContent='';
+  p.append(el('h2',null,a.id+'  '+a.title));
+  const v=el('div','vline');const bg=el('span','badge',a.verdict);bg.style.background=V[a.verdict]||'#999';v.append(bg);if(a.why)v.append(el('span','why','  '+a.why));p.append(v);
+  if(a.updated_by)p.append(el('div','meta','verdict by '+a.updated_by+(a.updated?' · '+a.updated:'')));
+  if(a.note)p.append(el('div','note',a.note));
+  if(a.pending.length){const b=el('div','pendbox');b.append(el('h3',null,'Pending edits — awaiting Zac'));a.pending.forEach(q=>b.append(el('div','pi','#'+q.pid+' '+q.op+': '+q.payload+' — '+q.rationale+' (by '+q.by+')')));p.append(b);}
+  if(a.history.length){p.append(el('h3',null,'Verdict history'));a.history.forEach(h=>p.append(el('div','hi',h.at+'  '+(h.old||'-')+' → '+h.new+(h.why?'  ('+h.why+')':'')+'  by '+h.by)));}
+  p.append(el('h3',null,'Evidence ('+a.evidence.length+')'));
+  if(!a.evidence.length)p.append(el('div','muted','none logged yet'));
+  a.evidence.forEach(c=>{const d=el('div','claim'+(c.dead?' dead':''));d.append(el('div','cs',c.statement));
+    d.append(el('div','cmeta','['+c.status+'] '+c.setting+(c.source?' · '+c.source:'')+(c.author?' · '+c.author:'')));
+    if(c.dead&&c.reason)d.append(el('div','creason','⚠ '+c.reason+(c.successor?' → '+c.successor:'')));p.append(d);});}
+const lg=document.getElementById('legend');Object.keys(V).forEach(k=>{const s=el('span');const d=el('i','dot');d.style.background=V[k];s.append(d,document.createTextNode(k));lg.append(s);});
+document.getElementById('gen').textContent='· '+DATA.aims.length+' aims · generated '+DATA.generated;
+if(DATA.npending){const b=document.getElementById('pbanner');b.style.display='block';b.textContent=DATA.npending+' pending tree edit(s) awaiting Zac — the ● nodes.';}
+build('',document.getElementById('tree'));
+</script></body></html>"""
+
+def cmd_aim_render(a):
+    con = connect()
+    aims, npend = _render_data(con)
+    blob = json.dumps({"generated": now(), "npending": npend, "aims": aims}, ensure_ascii=False).replace("</", "<\\/")
+    out = a.out or os.path.join(LAB, "AIMS_TREE.html")
+    with open(out, "w", encoding="utf-8") as f: f.write(AIMS_HTML.replace("__DATA__", blob))
+    print(f"lab aim: wrote {out} ({len(aims)} aims, {npend} pending)")
+
 def build_parser():
     p = argparse.ArgumentParser(prog="lab claim", description="Lab Knowledge Map / claims ledger")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -624,6 +716,7 @@ def build_parser():
     ast.add_argument("--approved-by", dest="approved_by"); ast.set_defaults(fn=cmd_aim_set)
     asd = ams.add_parser("seed"); asd.add_argument("--file"); asd.add_argument("--commit", action="store_true")
     asd.set_defaults(fn=cmd_aim_seed)
+    arn = ams.add_parser("render"); arn.add_argument("--out"); arn.set_defaults(fn=cmd_aim_render)
     return p
 
 def main(argv):
