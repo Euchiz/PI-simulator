@@ -342,7 +342,13 @@ def cmd_confirm(a):
     with WriteLock():
         con = connect(); r = get(con, a.id)
         if r["status"] != "open":
-            die(f"claim {a.id} is '{r['status']}', not 'open' — confirm is for unconfirmed auto-extracted claims")
+            # Name the escape route. Anyone who triaged BEFORE cards existed lands here holding a card
+            # and no obvious verb; a bare "confirm is for open claims" reads as "no path exists at all".
+            hint = (f"\n  To attach a card to an already-'{r['status']}' claim (a card attach is not a"
+                    f" status change, so it needs no re-gating):\n      lab claim link-card {a.id} <CARD.md>"
+                    ) if getattr(a, "card", None) else ""
+            die(f"claim {a.id} is '{r['status']}', not 'open' — confirm is for unconfirmed "
+                f"auto-extracted claims{hint}")
         con.execute("UPDATE claim SET status=?, status_reason=?, card=COALESCE(?,card), card_waiver=?, updated=? WHERE id=?",
                     (a.status, a.reason, card, waiver, now(), a.id))
         con.commit()
@@ -877,6 +883,26 @@ def _resolve(card_dir, p):
     p = os.path.expanduser(p)
     return p if os.path.isabs(p) else os.path.normpath(os.path.join(card_dir, p))
 
+def _check_header_ids(text):
+    """Resolve the claims:/aim: header against the ledger. Until this existed the header was the ONE
+    field `check` trusted, so a hand-typed id that no claim ever had passed validation silently."""
+    warns = []
+    try: con = connect()
+    except Exception: return warns                      # no DB reachable: skip, never block on it
+    m = re.search(r"^\s*claims?\s*:\s*(.*)$", text, re.M)
+    if m:
+        # stop at the next header key on the same line (aim:/author:/date:) — the fields share a line
+        val = re.split(r"\b[A-Za-z]\w*\s*:", m.group(1))[0]
+        for cid in [t.strip() for t in re.split(r"[,\s]+", val) if t.strip()]:
+            if not con.execute("SELECT 1 FROM claim WHERE id=?", (cid,)).fetchone():
+                warns.append(f"claims: header names '{cid}', which is not a claim id in the ledger")
+    # aim ids are dotted numerics; requiring a leading digit stops an EMPTY `aim:` from swallowing
+    # the next key ("aim:   author: test" must not report 'author' as a missing aim)
+    am = re.search(r"\baim\s*:[ \t]*(\d[\w.]*)", text)
+    if am and not con.execute("SELECT 1 FROM aim WHERE id=?", (am.group(1),)).fetchone():
+        warns.append(f"aim: header names '{am.group(1)}', which is not an aim id in the tree")
+    return warns
+
 def card_check(path):
     """(ok, errors, warnings) per the validation floor. stat() only — never walks a tree."""
     if not os.path.isfile(path): return False, [f"card file not found: {path}"], []
@@ -891,6 +917,7 @@ def card_check(path):
             errs.append(f"section ## {sec} is empty (still the template stub)")
     for sec in ("Question", "Repro"):
         if not re.search(rf"^#+\s*{sec}\b", text, re.M): warns.append(f"recommended section absent: ## {sec}")
+    warns += _check_header_ids(text)   # a claims:/aim: id that resolves to nothing is a silent lie
     paths = _card_paths(text)
     scripts = [p for p in paths if p.lower().endswith(SCRIPT_EXT)]
     outputs = [p for p in paths if p.lower().endswith(OUTPUT_EXT)]

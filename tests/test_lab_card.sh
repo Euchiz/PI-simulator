@@ -143,4 +143,37 @@ echo "$audit" | grep -q "CL1" || fail "maint audit must name the broken claim"
 mv "$E/CARD.moved" "$E/CARD.md"    # restore so a re-run is clean
 ok "maint audits card pointers and flags broken ones (stat only)"
 
+# --- confirm on an already-decided claim must NAME the escape route (link-card) ------------------
+# (poreior read the bare "confirm is for open claims" error as "no path exists" and reported a
+#  gap that did not exist; the fix is that the failure names the verb that DOES work.)
+K add --statement "triaged before cards existed" --kind result --status open --setting s --id PRE1 >/dev/null
+python3 - "$T/knowledge.db" <<'PY'
+import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("UPDATE claim SET status='holds' WHERE id='PRE1'"); c.commit()
+PY
+out="$(K confirm PRE1 --status holds --card "$E/CARD.md" 2>&1 || true)"
+echo "$out" | grep -q "link-card PRE1" || fail "confirm-on-decided must point at 'lab claim link-card <id>'"
+ok "confirm on an already-decided claim names link-card as the way out"
+K link-card PRE1 "$E/CARD.md" >/dev/null || fail "link-card must still attach to a decided claim"
+ok "link-card attaches to a pre-card-era holds claim"
+
+# --- card check must RESOLVE the claims:/aim: header, not trust it -------------------------------
+# (morpheus's card carried a hand-typed claim id that no claim ever had; nothing caught it.)
+cat > "$E/GHOST.md" <<'CARDEOF'
+# CARD: ghost header
+claims: NO-SUCH-CLAIM-ID    aim: 99.99
+## Setup
+real setup content here
+## Implementation
+ran scripts/run.py under env foo
+## Outcome
+numbers live in results.tsv
+## Limitations
+single dataset, no control
+CARDEOF
+gout="$(K card check "$E/GHOST.md" 2>&1 || true)"
+echo "$gout" | grep -q "NO-SUCH-CLAIM-ID" || fail "check must flag a claims: id that resolves to nothing"
+echo "$gout" | grep -q "99.99"            || fail "check must flag an aim: id that resolves to nothing"
+echo "$gout" | grep -q "passes the card floor" || fail "an unresolvable header WARNS, never blocks (a card may precede its claim)"
+ok "card check resolves claims:/aim: header ids (warns, does not block)"
+
 echo "ALL CARD TESTS PASSED"

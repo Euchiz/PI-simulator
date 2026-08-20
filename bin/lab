@@ -23,6 +23,15 @@ lab — messaging between sessions
 
 Identity is a STABLE job id, not the name: `lab send @<job-id>` always works, and a
 renamed session's mail follows it automatically.
+
+QUOTING — read this before scripting a send. The body is an ordinary shell word, so if you
+invoke `lab send` from bash -c (as agents do), BACKTICKS AND $ IN THE BODY ARE EXPANDED BY
+YOUR SHELL, NOT by lab: backticked command names get EXECUTED, their output is spliced into
+the message, and the recipient gets a garbled body. Safe patterns:
+  lab send x "subj" 'use the lab claim link-card verb'      # single quotes: nothing expands
+  lab send x "subj" "$(cat body.txt)"                       # or pipe the body on stdin
+  lab send x "subj" <<'EOF'  ...body...  EOF                # QUOTED heredoc — best for long bodies
+Plain prose is safest: avoid backticks in message bodies entirely.
 EOF
 ;;
     task|tasks) cat <<'EOF'
@@ -181,8 +190,10 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   MEETINGS      lab meeting [convene|post|read|status|compile|list|close|checkin]
   DATA          lab data [check|find|add|update|show|list|mv|render|export|audit|maint]
   TOOLS         lab tool [find|show|add|update|list|mv|deprecate|render|export|audit|maint]
-  KNOWLEDGE     lab claim [find|add|show|retract|list|confirm|review] · branch [map|set] · facts
+  KNOWLEDGE     lab claim [find|add|show|retract|list|confirm|review|link-card] · facts
+  CARDS         lab card [new|check|show] · lab claim link-card <id> <CARD.md>   ("no card, no holds")
   AIMS          lab aim [tree|show|log|set|propose|pending|approve|reject|link|seed]  (Zac's project mind map)
+  FRONTEND      lab know app [--fragment] · lab know export     -> ~/lab/KNOWLEDGE_MAP.html
   ANNOUNCE      lab note · board · status · digest · health
   ADMIN         lab init · register · manager · technician · projects · name · whoami · ext
 
