@@ -16,6 +16,14 @@ case ":$PATH:" in
   *":$DEST:"*) ;;
   *) echo "NOTE: $DEST is not on your PATH. Add:  export PATH=\"$DEST:\$PATH\"" ;;
 esac
+# user-level skills (available from EVERY project dir, like the SessionStart hook)
+if [ -d "$SELF/skills" ]; then
+  for d in "$SELF"/skills/*/; do
+    n="$(basename "$d")"; mkdir -p "$HOME/.claude/skills/$n"
+    cp "$d/SKILL.md" "$HOME/.claude/skills/$n/SKILL.md" 2>/dev/null && echo "installed skill: /$n"
+  done
+fi
+
 echo
 echo "next:"
 echo "  lab init ~/lab                 # create the blackboard"

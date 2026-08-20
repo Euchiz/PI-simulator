@@ -203,7 +203,7 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   FRONTEND      lab map          <- refresh the knowledge map (~/lab/KNOWLEDGE_MAP.html)
                 lab know app [--fragment] · lab know export     (the long forms)
   ANNOUNCE      lab note · board · status · digest · health
-  ADMIN         lab init · register · manager · technician · projects · name · whoami · ext
+  ADMIN         lab setup [name] · init · register · manager · technician · projects · name · whoami · ext
 
   lab help <topic>     topics: messaging, tasks, meetings, data, tools, knowledge, board, admin
   lab <cmd> --help     per-command flags (data/task/ext)
@@ -480,6 +480,48 @@ cmd_name() {
 # The SessionStart briefing — ONE source of truth the hook injects at every session start (also on
 # resume/compact). Points agents at the shared indexes (reach these, don't disk-scan) + arms delivery.
 # Edit here to change what every session sees at startup; hooks just call `lab startup`.
+cmd_setup() {
+  # "Set up the lab system" — the orient-me command for a fresh or restarted session, and for
+  # "I have no topic in mind". SessionStart already injects the aims tree, but it CANNOT fix a lost
+  # identity or arm the watcher, so those are the two things this makes explicit.
+  ensure_init
+  local want="${1:-}"
+  [ -n "$want" ] && cmd_register "$want" >/dev/null 2>&1
+  local self; self="$(resolve_self || true)"
+
+  echo "=== LAB SETUP ==="
+  if [ -z "$self" ]; then
+    cat <<'EOS'
+⚠ THIS SESSION HAS NO LAB IDENTITY — it cannot read its inbox and its mail is piling up unread.
+  Fix it with the name this session should own:   lab setup <name>     (e.g. lab setup poreior)
+  Pick the same name it had before, or `lab who` to see the roster.
+EOS
+  else
+    echo "you are: $self"
+    echo
+    echo "-- inbox --"; bash "$SELF/lab-msg" read || true
+    echo "-- your tasks --"
+    "$SELF/lab-task" list --mine 2>/dev/null | head -12 || true
+    echo "-- unclaimed, open to anyone --"
+    "$SELF/lab-task" list --open 2>/dev/null | head -8 || true
+  fi
+  echo
+  echo "-- the program (query live; never trust memory) --"
+  "$SELF/lab-know" aim tree --compact 2>/dev/null || true
+  cat <<'EOS'
+
+-- ARM LIVE MESSAGE DELIVERY (a shell cannot do this for you; the AGENT must call the tool) --
+  Monitor(command: "LAB_WATCH_INTERVAL=60 ~/lab/bin/lab watch",
+          description: "incoming lab messages", persistent: true)
+  Safe to re-run every time: a live watcher exits harmlessly, a dead one is taken over.
+
+-- where to look before doing anything --
+  lab claim find <topic>    already concluded?      lab aim show <id>    a node's verdict + evidence
+  lab data find <keywords>  already have it?        lab tool find <kw>   already installed?
+  lab map                   refresh ~/lab/KNOWLEDGE_MAP.html
+EOS
+}
+
 cmd_startup() {
   # LAB STATE — the aims tree (P4 SessionStart injection; Zac-greenlit A3). Read-only + idempotent,
   # so re-injection on resume/compact is harmless. Only emitted when the aims tree exists.
@@ -508,6 +550,7 @@ case "$cmd" in
   init)      cmd_init "$@";;
   register)  cmd_register "$@";;
   projects)  cmd_projects "$@";;
+  setup)     cmd_setup "$@";;      # orient / repair a fresh or restarted session
   startup)   cmd_startup "$@";;
   status)    cmd_status "$@";;
   send|broadcast|inbox|read|watch) exec bash "$SELF/lab-msg" "$cmd" "$@";;
