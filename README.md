@@ -35,6 +35,7 @@ lab who                        an agent checks who else is around
 lab task                       an agent looks for work to pick up
 lab send <agent> "…" "…"       an agent hands something to another
 lab data check <dataset-id>    an agent checks before re-downloading
+lab claim find <topic>         an agent checks what's already been concluded
 ```
 
 ## ⚡ Quick start
@@ -98,6 +99,12 @@ lives, what state it's in, how it was checked. One command, before anyone downlo
 whether you already have it. And a dataset isn't "done" until it records *how* it was verified —
 because *"the job exited without an error"* has burned this project before.
 
+🧠 &nbsp; **Remember what the project concluded — and what it took back.** &nbsp; Every result, null and
+decision is recorded as a *claim*, together with the exact conditions that produced it and whether it
+still stands. Ask *"have we already concluded X?"* and you get the current answer. Withdrawn findings
+never come back as current — they're shown struck through, next to whatever replaced them. There's a
+[visual map](#-the-knowledge-map--built-for-research-projects-not-document-search) of the whole thing.
+
 🔎 &nbsp; **Get a second opinion.** &nbsp; Optionally plug in a coding assistant from a *different*
 company (Codex, Gemini CLI, Aider…) as an independent reviewer any agent can consult. It reads your
 code and data but can't change anything — useful precisely because it isn't one of your own agents
@@ -106,6 +113,47 @@ and has no stake in their conclusions.
 🚦 &nbsp; **Know when something is stuck.** &nbsp; A daily check surfaces what's actually wrong — an
 agent gone quiet, mail nobody read, a task nobody picked up, a dataset whose files have vanished.
 Silent when all is well.
+
+## 🧭 The knowledge map — built for research projects, not document search
+
+Most "give your AI a memory" tools are a search index: they embed your notes and hand back passages
+that resemble your question. That shape is wrong for a research project. A passage can't tell you
+whether a finding **still stands**, **under what conditions** it held, or what it was evidence
+**for** — and similarity search will cheerfully return a result you retracted three months ago,
+because the text still matches. In science, confidently re-serving a withdrawn result is not a
+lesser answer. It's the worst one.
+
+So this stores something different: **not documents, but claims and the structure they hang from.**
+
+**The aim tree** is what your project is *trying to prove* — your actual research program, as a
+hierarchy you control. Every finding attaches to a node as evidence for or against it. This is the
+part a general-purpose tool can't have: the tree is prescriptive, it's yours, and **verdicts are
+asserted by you, never inferred by an agent.** An agent logging a result can never quietly promote
+your aim to "proven"; edits to the tree queue up for your approval.
+
+**A claim** is one assertion with the *setting* that produced it — the conditions, the sample, the
+configuration — and a status: does it hold, is it a null, was it retracted, superseded, confounded?
+Retrieval is status-aware, so retracted work stays visibly dead instead of leaking back in.
+
+**An experiment card** is the trace behind a claim: setup, implementation, outcome, limitations, and
+real paths to the scripts and output data. The rule is **"no card, no holds"** — a result can't be
+promoted to "this holds" without one, and the card is validated (the paths have to actually exist).
+It's the difference between a finding and a claim about a finding.
+
+**The visualizer** is one self-contained HTML file — no server, no build, no network. The aim tree as
+a real graph you can pan and click through, every claim with its evidence and its card rendered
+inline, filters for the things that rot quietly (findings attached to no aim, results still missing a
+card, cards pointing at files that have vanished).
+
+```
+lab claim find <topic>      have we already concluded this?
+lab aim show <id>           what does the evidence say about this aim?
+lab map                     rebuild the visual map
+```
+
+It is deliberately not clever: no embeddings, no similarity, no model deciding what's true. Just an
+honest, queryable record of what your project believes and why — one your agents write as they work,
+and you can read at a glance.
 
 ## 🔧 Living with it
 
@@ -128,6 +176,7 @@ the same commands your agents use are there for you: `lab help` for a map, or `l
 |---|---|
 | [`docs/AGENT-SETUP.md`](docs/AGENT-SETUP.md) | hand this to an agent and it installs everything |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | the habits your agents follow — worth skimming |
+| [`docs/knowledge-map.md`](docs/knowledge-map.md) | the aim tree, claims and experiment cards — and why it isn't a RAG system |
 | [`docs/dataset-registry.md`](docs/dataset-registry.md) | what gets recorded about each dataset, and why |
 | [`docs/external-reviewers.md`](docs/external-reviewers.md) | adding an outside reviewer |
 | [`examples/`](examples/) | ready-made snippets to drop into your own setup |
