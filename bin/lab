@@ -200,7 +200,8 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   KNOWLEDGE     lab claim [find|add|show|retract|list|confirm|review|link-card] · facts
   CARDS         lab card [new|check|show] · lab claim link-card <id> <CARD.md>   ("no card, no holds")
   AIMS          lab aim [tree|show|log|set|propose|pending|approve|reject|link|seed]  (Zac's project mind map)
-  FRONTEND      lab know app [--fragment] · lab know export     -> ~/lab/KNOWLEDGE_MAP.html
+  FRONTEND      lab map          <- refresh the knowledge map (~/lab/KNOWLEDGE_MAP.html)
+                lab know app [--fragment] · lab know export     (the long forms)
   ANNOUNCE      lab note · board · status · digest · health
   ADMIN         lab init · register · manager · technician · projects · name · whoami · ext
 
@@ -521,6 +522,7 @@ case "$cmd" in
   facts)     exec python3 "$SELF/lab-know" facts "$@";;
   aim|aims)  exec python3 "$SELF/lab-know" aim "$@";;
   card)      exec python3 "$SELF/lab-know" card "$@";;
+  map)       exec python3 "$SELF/lab-know" map "$@";;   # one-word knowledge-map refresh
   know)      exec python3 "$SELF/lab-know" "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;

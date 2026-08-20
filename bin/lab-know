@@ -727,6 +727,14 @@ def cmd_app(a):
     print(f"lab know app: wrote {out}  ({len(data['aims'])} aims, {len(data['claims'])} claims, "
           f"{len(data['cards'])} cards, {len(html)//1024} KB)")
 
+def cmd_map(a):
+    """`lab map` — the one-word refresh: rebuild BOTH the standalone page and the artifact fragment."""
+    cmd_app(argparse.Namespace(out=None, fragment=False))
+    cmd_app(argparse.Namespace(out=None, fragment=True))
+    print(f"\nopen it:   {os.path.join(LAB, 'KNOWLEDGE_MAP.html')}")
+    print("to refresh the PUBLISHED claude.ai artifact, ask any Claude session:")
+    print('   "republish the knowledge map artifact"   (regenerating the file does not update the URL)')
+
 def cmd_export(a):
     data = export_data(connect())
     blob = json.dumps(data, ensure_ascii=False, indent=None if a.compact else 2)
@@ -1088,6 +1096,7 @@ def build_parser():
     ex.set_defaults(fn=cmd_export)
     ap = sub.add_parser("app"); ap.add_argument("--out"); ap.add_argument("--fragment", action="store_true")
     ap.set_defaults(fn=cmd_app)
+    sub.add_parser("map").set_defaults(fn=cmd_map)   # `lab map` — one-word refresh
 
     arn = ams.add_parser("render"); arn.add_argument("--out")
     arn.add_argument("--fragment", action="store_true", help="page-content-only (for claude.ai artifacts)")
