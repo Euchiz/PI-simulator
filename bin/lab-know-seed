@@ -255,14 +255,21 @@ def main():
     ap = argparse.ArgumentParser(prog="lab-know-seed")
     ap.add_argument("--commit", action="store_true", help="actually insert (default: preview only)")
     ap.add_argument("--posts", action="store_true", help="only meeting posts")
-    ap.add_argument("--decisions", action="store_true", help="only decisions/")
+    ap.add_argument("--decisions", action="store_true", help="only decisions/ (branch extraction)")
+    ap.add_argument("--branches", action="store_true",
+                    help="regenerate the DEPRECATED branch layer from decisions/. OFF by default since "
+                         "2026-08-20: every generated row had zero claims and the names were slugify "
+                         "artifacts; aims carry the structure now. Kept so it stays recoverable.")
     ap.add_argument("--no-board", dest="no_board", action="store_true", help="skip BOARD.md notes")
     ap.add_argument("--board-days", dest="board_days", type=int, default=BOARD_DAYS,
                     help=f"only board notes from the last N days (default {BOARD_DAYS}; 0 = all)")
     ap.add_argument("--limit", type=int, default=0, help="cap files (for a quick look)")
     a = ap.parse_args()
     do_posts = a.posts or not a.decisions
-    do_dec   = a.decisions or not a.posts
+    # BRANCH layer DEPRECATED 2026-08-20 (manager-recommended, Zac-consulted): the nightly maint was
+    # regenerating 15 branch rows that no claim referenced, with slugify-mangled names, from ONE file's
+    # "## BRANCH" headings. Opt-in only now — otherwise any cleanup silently undid itself at 08:21.
+    do_dec   = a.branches and (a.decisions or not a.posts)
     do_board = not a.no_board and not a.posts and not a.decisions   # board is part of the full default seed
 
     skips, claims, branches = [], [], []

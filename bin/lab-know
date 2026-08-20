@@ -375,7 +375,14 @@ def _uncurated_branches(con):
                           GROUP BY branch ORDER BY branch""").fetchall()
     return [(r["name"], _status_counts(con, r["name"])) for r in rows]
 
+BRANCH_DEPRECATED = (
+    "note: `lab branch` is DEPRECATED (2026-08-20) — it still works, nothing was deleted.\n"
+    "  Aims are the organising structure: `lab aim tree` · `lab aim log <id> --result …`.\n"
+    "  The branch TABLE never connected to anything (every row had zero claims); the seeder no\n"
+    "  longer regenerates it. `claim.branch` survives as a free-text TOPIC tag: `--topic <name>`.")
+
 def cmd_branch(a):
+    print(BRANCH_DEPRECATED, file=sys.stderr)   # deprecate, don't delete — the verbs keep resolving
     con = connect()
     if a.bcmd == "list":
         rows = con.execute("SELECT * FROM branch ORDER BY status, name").fetchall()
@@ -495,10 +502,10 @@ def cmd_aim_log(a):
     with WriteLock():
         con = connect(); _aim_get(con, a.id)
         cid = mkid(con, a.result, a.setting); t = now()
-        con.execute("""INSERT INTO claim(id,statement,kind,status,setting,evidence,source,author,date,aim,card,card_waiver,created,updated)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        con.execute("""INSERT INTO claim(id,statement,kind,status,setting,evidence,source,author,date,aim,branch,card,card_waiver,created,updated)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (cid, a.result, "result", status, a.setting, a.evidence, a.source,
-                     resolve_self() or "unknown", a.date, a.id, card, waiver, t, t))
+                     resolve_self() or "unknown", a.date, a.id, getattr(a, "branch", None), card, waiver, t, t))
         con.commit()
     print(f"logged claim {cid} onto aim {a.id}  [{status}]" +
           (f"  (card: {os.path.basename(card)})" if card else f"  (no-card: {waiver})" if waiver else ""))
@@ -1007,7 +1014,10 @@ def build_parser():
     a.add_argument("--kind", required=True); a.add_argument("--status", default="open")
     a.add_argument("--setting", required=True); a.add_argument("--evidence")
     a.add_argument("--status-reason", dest="status_reason", help="why the current status (e.g. retraction reason)")
-    a.add_argument("--branch"); a.add_argument("--source"); a.add_argument("--author")
+    # `branch` the COLUMN survives the deprecated branch TABLE as a free-text TOPIC tag
+    a.add_argument("--branch", "--topic", dest="branch",
+                   help="free-text TOPIC tag (caller / wetlab / clinical …); --branch is the old name")
+    a.add_argument("--source"); a.add_argument("--author")
     a.add_argument("--date"); a.add_argument("--id"); a.add_argument("--verified", action="store_true")
     a.add_argument("--verified-how", dest="verified_how")
     a.add_argument("--supersedes"); a.add_argument("--confounded-by", dest="confounded_by")
@@ -1018,7 +1028,8 @@ def build_parser():
     s = sub.add_parser("show"); s.set_defaults(fn=cmd_show); s.add_argument("id")
 
     l = sub.add_parser("list"); l.set_defaults(fn=cmd_list)
-    for opt in ("branch","status","kind","author"): l.add_argument(f"--{opt}")
+    for opt in ("status","kind","author"): l.add_argument(f"--{opt}")
+    l.add_argument("--branch", "--topic", dest="branch", help="filter by TOPIC tag (e.g. caller)")
     l.add_argument("--all", action="store_true")
 
     r = sub.add_parser("retract"); r.set_defaults(fn=cmd_retract)
@@ -1057,6 +1068,7 @@ def build_parser():
     al = ams.add_parser("log"); al.add_argument("id"); al.add_argument("--result", required=True)
     al.add_argument("--setting", required=True); al.add_argument("--evidence"); al.add_argument("--source")
     al.add_argument("--status"); al.add_argument("--date")
+    al.add_argument("--topic", "--branch", dest="branch", help="free-text TOPIC tag (e.g. caller)")
     al.add_argument("--card"); al.add_argument("--no-card", dest="no_card")   # 'no card, no holds' gate
     al.set_defaults(fn=cmd_aim_log)
     aln = ams.add_parser("link"); aln.add_argument("claim_id"); aln.add_argument("aim_id"); aln.set_defaults(fn=cmd_aim_link)

@@ -118,8 +118,10 @@ lab — knowledge map / claims ledger (scientific STATE: results, nulls, decisio
                                      ('no card, no holds': result→holds needs --card <CARD.md> or --no-card "why")
   lab claim link-card <id> <path>  Attach an experiment card to a claim (runs `lab card check` first)
   lab claim review                 Batch view of open/unconfirmed claims to confirm
-  lab branch list|show <name>|set <name> --status … --mechanism … --end-condition …
-  lab branch map                   Exploration tree: branches × status + counts (holds/null/retracted)
+  lab branch …                     DEPRECATED (2026-08-20) — still works, nothing deleted. The branch
+                                     TABLE never connected to anything (every row had 0 claims) and the
+                                     seeder no longer regenerates it. Aims are the structure: lab aim tree.
+                                     Closed-attempts live as null/retracted claims WITH reasons under an aim.
   lab facts                        Settled facts (kind=settled-fact, status=holds) — "what we know"
 
 AIMS TREE (Zac's project mind map — the prescriptive program; claims are the evidence under each aim):
@@ -152,6 +154,11 @@ EXPERIMENT CARDS (the trace behind a claim — setup/implementation/outcome/limi
 verdict ∈ proposed|active|claimed|likely|falsified|deferred|retired. Dotted id IS the hierarchy.
 Verdicts are ASSERTED (never inferred, history kept); tree edits need Zac's approval; logging a result
 NEVER changes a verdict.
+
+TOPIC TAG: the `branch` COLUMN survives the deprecated branch table as a free-text subject tag — a
+different axis from aims (aim = position in the program; topic = subject area), so cross-cutting
+queries work: `lab claim add … --topic caller` · `lab aim log … --topic wetlab` · `lab claim list
+--topic caller`. `--branch` remains accepted as the old spelling. No curation, no table, no upkeep.
 
 kind ∈ result|insight|decision|settled-fact|method-lesson.  --setting is REQUIRED: the conditions
 that produced the claim (this is what keeps "retracted-under-confound vs holds-under-a-tweak" straight).
