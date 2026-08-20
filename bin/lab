@@ -502,8 +502,9 @@ EOS
     echo "-- inbox --"; bash "$SELF/lab-msg" read || true
     echo "-- your tasks --"
     "$SELF/lab-task" list --mine 2>/dev/null | head -12 || true
-    echo "-- unclaimed, open to anyone --"
-    "$SELF/lab-task" list --open 2>/dev/null | head -8 || true
+    # deliberately NOT listing unclaimed tasks: this command re-attaches a session, it does not hand
+    # it an agenda. A restart is usually mid-task, and a menu of other work pulls the thread off it.
+    # Someone who actually wants work: `lab task list --open`.
   fi
   echo
   echo "-- the program (query live; never trust memory) --"

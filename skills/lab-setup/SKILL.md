@@ -1,6 +1,6 @@
 ---
 name: lab-setup
-description: Wire this session into the shared lab and verify the wiring is actually working — resolve/repair its lab identity, consume its inbox, ARM the live message watcher (a tool call no shell can make), load the aims tree, and self-check the lab system for drift, dead watchers, broken pointers and stalled queues. Use when a session starts blank or was force-stopped/restarted, when asked to "set up the lab system", "re-setup", "self-check", "check the lab wiring", "am I connected", or when there is no topic in mind and the session needs to orient and pick up work.
+description: Wire this session into the shared lab and verify the wiring is actually working — resolve/repair its lab identity, consume its inbox, ARM the live message watcher (a tool call no shell can make), load the aims tree, and self-check the lab system for drift, dead watchers, broken pointers and stalled queues. Use when a session starts blank or was force-stopped/restarted, or when asked to "set up the lab system", "re-setup", "self-check", "check the lab wiring", or "am I connected". Reports state only — it never proposes what to work on.
 ---
 
 # lab-setup
@@ -57,17 +57,20 @@ Report anything that fails; stay quiet about what passes.
 Do **not** run broad filesystem scans as part of this — the registries are the index, and walking NFS
 from the login node is forbidden (`find` on a big mount once degraded the node for 26 hours).
 
-## 4. Orient, and offer work
+## 4. Report state — and nothing else
 
-Close by telling the user, in a few lines:
+Close with a few lines of fact:
 
 - who this session is, and whether delivery is live
 - anything the self-check flagged, most-actionable first
-- what is waiting: unread mail, tasks tagged to this session, unclaimed tasks, pending approvals
+- what is waiting: unread mail, tasks tagged to this session, pending approvals
 
-**When there is no topic in mind**, propose 2–3 concrete candidates drawn from real state — an
-unclaimed task, a backfill the queue is asking for, a flagged inconsistency — with a one-line reason
-each, and let the user pick. Do not invent work that the lab's own records do not point at.
+**Do not propose what to work on, and do not steer the conversation.** This skill re-attaches
+plumbing; it does not set an agenda. A session is often restarted *mid-task*, and an unprompted
+"here are three things you could do" pulls the thread off whatever the transcript was actually doing
+— the restart should be invisible, not a fresh start. Report the state, then **pick up exactly where
+the conversation left off**; if the user asked for something before the restart, that request still
+stands. If there is genuinely nothing in flight, stop after the report and wait.
 
 ## Notes
 
