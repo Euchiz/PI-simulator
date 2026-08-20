@@ -252,10 +252,13 @@ function renderTree(){
                         transform:`translate(${n.x},${n.y})`, tabindex:"0", role:"button",
                         "data-aim": a.id, "aria-label": `Aim ${a.id}: ${a.title}` });
     g.appendChild(mk("rect", { width:NW, height:NH, rx:8 }));
-    g.appendChild(mk("rect", { width:4, height:NH, rx:2, fill:vcolor(a.verdict) }));
+    // NOTE: var() does NOT resolve in an SVG presentation attribute (fill="var(--x)" renders black).
+    // Custom properties are only substituted in CSS, so the colour goes through `style`, not `fill`.
+    g.appendChild(mk("rect", { width:4, height:NH, rx:2, style:`fill:${vcolor(a.verdict)}` }));
     const id = mk("text", { class:"nid", x:13, y:18 }); id.textContent = a.id; g.appendChild(id);
     const vd = mk("text", { x:NW - 12, y:18, "text-anchor":"end", "font-size":"10.5", "font-weight":"700",
-                            fill:vcolor(a.verdict) }); vd.textContent = a.verdict.toUpperCase(); g.appendChild(vd);
+                            style:`fill:${vcolor(a.verdict)}` });
+    vd.textContent = a.verdict.toUpperCase(); g.appendChild(vd);
     const t1 = mk("text", { x:13, y:34 }); t1.textContent = trunc(a.title, 33); g.appendChild(t1);
     const c = mk("text", { class:"cnt", x:13, y:46 });
     c.textContent = all ? `${live} evidence${all > live ? ` (+${all - live} struck)` : ""}` : "no evidence";
