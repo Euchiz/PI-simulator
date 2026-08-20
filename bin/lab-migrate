@@ -45,6 +45,28 @@ def lab_agents():
     except OSError: pass
     return m
 
+def activity(short_id):
+    """What is actually RUNNING in a session, from its own state.json (on NFS -> works cross-node).
+    Claude Code maintains this, so it beats process-scanning, which cannot see another node.
+      inFlight.tasks / .kinds  -> running background tasks ('monitor', 'local_bash')
+      fan[].kind               -> 'monitor' | 'shell' | 'todo'   (todo = a pending item, NOT running)
+    """
+    f = os.path.join(HOME, ".claude", "jobs", str(short_id), "state.json")
+    out = {"shells":0, "monitors":0, "tasks":0, "queued":0, "state":None, "tempo":None, "labels":[]}
+    try: d = json.load(open(f))
+    except Exception: return out
+    inf = d.get("inFlight") or {}
+    out["tasks"], out["queued"] = inf.get("tasks",0) or 0, inf.get("queued",0) or 0
+    out["state"], out["tempo"] = d.get("state"), d.get("tempo")
+    kinds = inf.get("kinds") or []
+    for x in (d.get("fan") or []):
+        if not isinstance(x, dict): continue
+        k = x.get("kind")
+        if k == "shell":   out["shells"]   += 1; out["labels"].append("shell:"+str(x.get("label",""))[:28])
+        elif k == "monitor": out["monitors"] += 1; out["labels"].append("monitor:"+str(x.get("label",""))[:28])
+    if "local_bash" in kinds and out["shells"] == 0: out["shells"] = 1
+    return out
+
 def watcher_alive(name):
     f = os.path.join(WATCH, f"{pkey(name)}.lock")
     try:
@@ -89,17 +111,25 @@ def read_all(mid):
 
 # ---------- classification ----------
 def classify(s, roster):
-    """-> (class, status, note). Never kills, never resumes; read-only."""
+    """-> (class, status, note, act). Never kills, never resumes; read-only."""
     name, sid = s.get("name") or s.get("id"), s.get("sessionId","")
     txt = transcript_for(sid)
+    act = activity(s.get("id"))
     if not txt:
-        return "unmigratable", "failed", "no transcript on disk — cannot be resumed"
-    is_lab = pkey(name) in roster
-    if s.get("state") == "working":
-        if is_lab and watcher_alive(name):
-            return "active-watched", "pending", "reachable — wrap-up message sent"
-        return "active-unwatched", "pending", "ACTIVE but not reachable — close this one by hand"
-    return "static", "closed", "idle at classification time — nothing to wrap up"
+        return "unmigratable", "failed", "no transcript on disk — cannot be resumed", act
+    # A running SHELL is real work in flight. A monitor is only a watcher — it dies with the node
+    # harmlessly, and nearly every lab session has one armed, so monitors alone must NOT mark a
+    # session busy or the whole lab would be permanently pending.
+    busy = (s.get("state") == "working") or act["shells"] > 0 or act["queued"] > 0
+    what = []
+    if act["shells"]:   what.append(f"{act['shells']} shell")
+    if act["monitors"]: what.append(f"{act['monitors']} monitor")
+    detail = ", ".join(what) or "nothing running"
+    if not busy:
+        return "static", "closed", f"idle ({detail}) — nothing to wrap up", act
+    if pkey(name) in roster and watcher_alive(name):
+        return "active-watched", "pending", f"BUSY ({detail}) — reachable, wrap-up message sent", act
+    return "active-unwatched", "pending", f"BUSY ({detail}) — NOT reachable, close by hand", act
 
 WRAPUP = """TOP-PRIORITY — node termination in ~{hours}h.
 
@@ -137,7 +167,7 @@ def cmd_precheck(a):
     rows, notified = [], 0
     for s in sessions():
         name = s.get("name") or s.get("id")
-        cls, st, note = classify(s, roster)
+        cls, st, note, act = classify(s, roster)
         prev = None
         p = os.path.join(status_dir(mid), f"{pkey(name)}.json")
         if os.path.isfile(p):
@@ -158,6 +188,8 @@ def cmd_precheck(a):
                          session_id=s.get("sessionId"), short_id=s.get("id"),
                          cwd=s.get("cwd"), transcript=transcript_for(s.get("sessionId","")),
                          state_at_check=s.get("state"), is_lab=pkey(name) in roster,
+                         running=f"{act['shells']} shell / {act['monitors']} monitor",
+                         running_labels=act["labels"],
                          by="precheck" if st!="pending" else None)
         rows.append((name, cls, st, note))
 
@@ -212,6 +244,14 @@ def cmd_force(a):
         print(f"  FORCED {r['agent']} — uncommitted work in that session may be lost")
     return cmd_status(argparse.Namespace(id=mid))
 
+
+SETUP_PROMPT = (
+    "This session was just migrated to a new node. Run the lab-setup skill now: repair this "
+    "session's lab identity, consume its inbox, ARM the live message watcher, and self-check the "
+    "lab wiring. Then report the state in a few lines and STOP — do not resume any previous work "
+    "and do not start anything new until asked. If the conversation above mentions in-flight "
+    "sbatch job ids, list them in your report so they are not lost."
+)
 
 # ---------- the resume half: runs on the NEW node ----------
 def manifest(mid):
@@ -274,6 +314,11 @@ def cmd_move(a):
         b = backup(mid, r)                                   # §5.0 — back up BEFORE touching anything
         cwd = r.get("cwd") if r.get("cwd") and os.path.isdir(r.get("cwd")) else os.getcwd()
         cmd = ["claude","--bg","--remote-control","--resume",sid,"--name",agent]
+        if not a.no_setup:
+            # Re-attach the session to the lab on arrival: identity, inbox, and — the part no shell
+            # can do — ARM THE WATCHER. Explicitly tells it to stop afterwards: a rotation can land
+            # unattended at 3am, and a session resuming work with nobody watching is not wanted.
+            cmd.append(SETUP_PROMPT)
         try:
             res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
             out = re.sub(r"\x1b\[[0-9;]*m","", (res.stdout or "") + (res.stderr or ""))
@@ -351,6 +396,8 @@ def main():
     mv.add_argument("--id"); mv.add_argument("--force", action="store_true", help="move even if some are pending")
     mv.add_argument("--allow-live-old", dest="allow_live_old", action="store_true",
                     help="proceed when the old host's liveness cannot be verified from here")
+    mv.add_argument("--no-setup", dest="no_setup", action="store_true",
+                    help="do NOT auto-run lab-setup in each resumed session (default: run it)")
     mv.set_defaults(fn=cmd_move)
     ac = sub.add_parser("aftercheck", help="verify the move and report what needs attention")
     ac.add_argument("--id"); ac.add_argument("--finalise", action="store_true"); ac.set_defaults(fn=cmd_aftercheck)
