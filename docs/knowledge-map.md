@@ -83,6 +83,16 @@ holds-results missing a card, card pointers that no longer resolve.
 
 Regenerated nightly. `lab know export` emits the same snapshot as JSON if you'd rather query it.
 
+## Try it without committing your project
+
+```bash
+./docs/demo/build-demo-map.sh /tmp/demo-lab   # then open /tmp/demo-lab/DEMO_MAP.html
+```
+
+Builds the illustrative map shown in the README — a personalised neoantigen mRNA vaccine programme
+for resected melanoma, with synthetic numbers — so you can click through a populated aim tree,
+a superseded claim and an experiment card before pointing this at real work.
+
 ## Design notes
 
 - **Nothing is promoted automatically.** Parsers propose; humans confirm. An agent can log and
