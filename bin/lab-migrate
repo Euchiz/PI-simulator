@@ -212,6 +212,124 @@ def cmd_force(a):
         print(f"  FORCED {r['agent']} — uncommitted work in that session may be lost")
     return cmd_status(argparse.Namespace(id=mid))
 
+
+# ---------- the resume half: runs on the NEW node ----------
+def manifest(mid):
+    try: return json.load(open(os.path.join(mig_dir(mid),"manifest.json")))
+    except Exception: return {}
+
+def old_is_dead(rec, man):
+    """(dead, why). Processes cannot be inspected across nodes, so prefer Slurm as the authority."""
+    job = man.get("old_job")
+    if job:
+        r = subprocess.run(["squeue","-h","-j",str(job),"-o","%T"], capture_output=True, text=True, timeout=60)
+        st = (r.stdout or "").strip()
+        if r.returncode != 0 or not st:
+            return True, f"old job {job} is no longer in the queue"
+        return False, f"old job {job} is still {st} — its sessions are still alive"
+    if os.uname().nodename == man.get("old_node"):
+        pid = rec.get("old_pid")
+        if not pid: return True, "same node, no pid recorded"
+        try: os.kill(int(pid), 0); return False, f"pid {pid} is still running on this node"
+        except Exception: return True, f"pid {pid} is gone"
+    # different node, no job id (the login-node case): nothing here can see those processes
+    return None, ("cannot verify from this node — the old host had no Slurm job. "
+                  "Close those sessions, or pass --allow-live-old if you are certain they are gone")
+
+def backup(mid, rec):
+    d = os.path.join(mig_dir(mid), "backup"); os.makedirs(d, exist_ok=True)
+    src = rec.get("transcript")
+    if not src or not os.path.isfile(src): return None
+    out = os.path.join(d, f"{pkey(rec['agent'])}-{os.path.basename(src)}.zst")
+    if os.path.isfile(out): return out
+    try:
+        subprocess.run(["zstd","-q","-f","-o",out,src], check=True, capture_output=True, timeout=600)
+        return out
+    except Exception:
+        out = out[:-4] + ".gz"
+        with open(src,"rb") as fi, __import__("gzip").open(out,"wb") as fo: fo.writelines(fi)
+        return out
+
+def cmd_move(a):
+    mid = a.id or current_mid() or die("no open migration")
+    man, recs = manifest(mid), read_all(mid)
+    pend = [r for r in recs if r.get("status") == "pending"]
+    if pend and not a.force:
+        die(f"{len(pend)} session(s) still pending — not greenlit. "
+            f"`lab migrate status`, then `lab migrate force` or `move --force`")
+    movable = [r for r in recs if r.get("status") in ("closed","forced")
+               and r.get("transcript") and not r.get("moved_to")]
+    skipped = [r for r in recs if r.get("moved_to")]
+    if skipped: print(f"  {len(skipped)} already moved — skipping (move is idempotent)")
+    if not movable: print("nothing to move"); return 0
+
+    print(f"=== migration {mid} — moving {len(movable)} session(s) onto {os.uname().nodename} ===")
+    ok = fail = 0
+    for r in sorted(movable, key=lambda r: r.get("agent","")):
+        agent, sid = r["agent"], r.get("session_id")
+        dead, why = old_is_dead(r, man)
+        if dead is False or (dead is None and not a.allow_live_old):
+            print(f"  SKIP {agent}: {why}")
+            write_status(mid, agent, move_error=why); fail += 1; continue
+        b = backup(mid, r)                                   # §5.0 — back up BEFORE touching anything
+        cwd = r.get("cwd") if r.get("cwd") and os.path.isdir(r.get("cwd")) else os.getcwd()
+        cmd = ["claude","--bg","--remote-control","--resume",sid,"--name",agent]
+        try:
+            res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
+            out = re.sub(r"\x1b\[[0-9;]*m","", (res.stdout or "") + (res.stderr or ""))
+            m = re.search(r"\b([0-9a-f]{8})\b", out)
+            if res.returncode != 0 or not m:
+                raise RuntimeError((out.strip().splitlines() or ["no output"])[0][:160])
+            new = m.group(1)
+            write_status(mid, agent, moved_to=new, moved_at=now(), moved_on=os.uname().nodename,
+                         backup=b, move_error=None)
+            print(f"  MOVED {agent:<14} {str(sid)[:8]} -> {new}   (backup: {os.path.basename(b) if b else 'none'})")
+            ok += 1
+        except Exception as e:
+            write_status(mid, agent, move_error=str(e)[:200]); fail += 1
+            print(f"  FAIL  {agent}: {e}")
+    print(f"\n  moved {ok}, failed {fail}.  Next: `lab migrate aftercheck`")
+    return 0 if fail == 0 else 2
+
+def cmd_aftercheck(a):
+    mid = a.id or current_mid() or die("no open migration")
+    recs = read_all(mid)
+    live = {}
+    for s in sessions():
+        if s.get("state") in ("working","done"):
+            live.setdefault(pkey(s.get("name") or ""), []).append(s.get("id"))
+    moved  = [r for r in recs if r.get("moved_to")]
+    forced = [r for r in recs if r.get("status") == "forced"]
+    bad    = [r for r in recs if r.get("class") == "unmigratable"]
+    errs   = [r for r in recs if r.get("move_error")]
+    print(f"=== migration {mid} — aftercheck ===")
+    print(f"  moved: {len(moved)}   forced: {len(forced)}   unmigratable: {len(bad)}   errors: {len(errs)}")
+    for r in moved:
+        seen = r["moved_to"] in sum(live.values(), [])
+        print(f"    {r['agent']:<16} -> {r['moved_to']}  {'visible' if seen else 'NOT VISIBLE in claude agents'}")
+    if forced:
+        print("\n  ⚠ FORCED — these did not wrap up; uncommitted work may have been lost:")
+        for r in forced: print(f"      {r['agent']}")
+    if bad:
+        print("\n  ⚠ NOT MIGRATED — no transcript existed:")
+        for r in bad: print(f"      {r['agent']}  ({r.get('note','')})")
+    if errs:
+        print("\n  ⚠ ERRORS:")
+        for r in errs: print(f"      {r['agent']}: {r['move_error']}")
+    dupes = {n:v for n,v in live.items() if len(v) > 1 and n}
+    if dupes:
+        print("\n  ⚠⚠ SAME LAB NAME LIVE TWICE — they will consume each other's inbox. Close the old one:")
+        for n,v in dupes.items(): print(f"      {n}: {v}")
+    else:
+        print("\n  ✓ no lab name is live twice")
+    if not errs and not dupes and a.finalise:
+        m = manifest(mid); m["finalised"] = now()
+        json.dump(m, open(os.path.join(mig_dir(mid),"manifest.json"),"w"), indent=2)
+        print("  migration finalised")
+    print(f"\n  The lab is on {os.uname().nodename}. Run `claude agents` here, then `/lab-setup`")
+    print(f"  in each session before using it. Backups: {os.path.join(mig_dir(mid),'backup')}")
+    return 0 if not (errs or dupes) else 2
+
 def main():
     p = argparse.ArgumentParser(prog="lab migrate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -229,6 +347,13 @@ def main():
     t = sub.add_parser("status"); t.add_argument("--id"); t.set_defaults(fn=cmd_status)
     k = sub.add_parser("close", help="register THIS session as closed")
     k.add_argument("--id"); k.add_argument("--agent"); k.add_argument("--note"); k.set_defaults(fn=cmd_close)
+    mv = sub.add_parser("move", help="resume the drained transcripts on THIS (new) node")
+    mv.add_argument("--id"); mv.add_argument("--force", action="store_true", help="move even if some are pending")
+    mv.add_argument("--allow-live-old", dest="allow_live_old", action="store_true",
+                    help="proceed when the old host's liveness cannot be verified from here")
+    mv.set_defaults(fn=cmd_move)
+    ac = sub.add_parser("aftercheck", help="verify the move and report what needs attention")
+    ac.add_argument("--id"); ac.add_argument("--finalise", action="store_true"); ac.set_defaults(fn=cmd_aftercheck)
     f = sub.add_parser("force", help="force-close stragglers so the loop cannot block")
     f.add_argument("--id"); f.add_argument("--agent"); f.add_argument("--reason"); f.set_defaults(fn=cmd_force)
     a = p.parse_args()
