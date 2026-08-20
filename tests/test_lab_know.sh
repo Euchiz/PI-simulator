@@ -53,3 +53,21 @@ K facts | grep -q "iota tentative idea" && fail "facts must EXCLUDE non-holds se
 ok "facts: settled-fact + holds only"
 
 echo "ALL TESTS PASSED"
+
+# --- _fragment must anchor on the REAL <body>, not a literal "<body>" in CSS/JS text -------------
+# (regression: a CSS comment mentioning <body> made the artifact fragment capture from mid-stylesheet)
+python3 - "$KNOW" <<'PY' || fail "_fragment must not latch onto a literal <body> in CSS/JS"
+import importlib.util, sys, re
+src = open(sys.argv[1], encoding="utf-8").read()
+ns = {}
+m = re.search(r"^def _fragment\(full\):.*?^(?=\S)", src, re.S | re.M)
+exec("import re\n" + m.group(0), ns)
+doc = ('<!doctype html><html><head><title>T</title><style>/* mentions <body> here */\n'
+       'body{margin:0}</style></head><body>\n<div id="app">REAL</div>\n</body></html>')
+out = ns["_fragment"](doc)
+assert "REAL" in out, "lost the real body content"
+assert "</head>" not in out.lower(), "leaked the head wrapper: " + out[:120]
+assert "</body>" not in out.lower(), "leaked the body wrapper"
+assert out.startswith("<title>"), "fragment must start with the title"
+PY
+ok "_fragment anchors on the real <body> (literal '<body>' in CSS does not corrupt it)"

@@ -631,6 +631,100 @@ def _render_data(con):
                     "evidence": ev, "history": hist, "pending": pend})
     return out, len(pend_all)
 
+MAX_CARD_BYTES = 96 * 1024     # per-card embed cap; cards are small markdown, this is a runaway guard
+
+def export_data(con):
+    """Complete mechanical snapshot of the knowledge map: aims + ALL claims (linked and orphan) +
+    edges + branches + pending + history + embedded card text. Reads only; stat/read of card FILES
+    is per-pointer (never walks a tree)."""
+    aims = sorted(con.execute("SELECT * FROM aim").fetchall(), key=lambda r: _aim_key(r["id"]))
+    aim_ids = {a["id"] for a in aims}
+    claims = con.execute("SELECT * FROM claim").fetchall()
+
+    cards, seen = {}, {}
+    for c in claims:
+        p = c["card"]
+        if not p: continue
+        cards.setdefault(p, {"path": p, "exists": False, "text": "", "claims": [], "error": ""})
+        cards[p]["claims"].append(c["id"])
+        if p in seen: continue
+        seen[p] = True
+        try:
+            if os.path.isfile(p):                       # stat, then read one known file — no walking
+                cards[p]["exists"] = True
+                if os.path.getsize(p) > MAX_CARD_BYTES:
+                    cards[p]["text"] = open(p, encoding="utf-8", errors="replace").read(MAX_CARD_BYTES)
+                    cards[p]["error"] = f"truncated at {MAX_CARD_BYTES} bytes"
+                else:
+                    cards[p]["text"] = open(p, encoding="utf-8", errors="replace").read()
+        except OSError as e:
+            cards[p]["error"] = f"unreadable: {e}"
+
+    def claim_row(c):
+        d = {k: (c[k] if c[k] is not None else "") for k in c.keys()}
+        d["dead"] = c["status"] in DEAD
+        d["successor"] = successor(con, c["id"]) or ""
+        d["orphan"] = not (c["aim"] and c["aim"] in aim_ids)
+        return d
+
+    kids = {}
+    for a in aims:
+        p = _aim_parent(a["id"])
+        if p: kids.setdefault(p, []).append(a["id"])
+
+    return {
+        "generated": now(),
+        "aims": [{"id": a["id"], "title": a["title"] or "", "note": a["note"] or "",
+                  "verdict": a["verdict"] or "proposed", "why": a["verdict_why"] or "",
+                  "updated_by": a["updated_by"] or "", "updated": (a["updated"] or "")[:10],
+                  "parent": _aim_parent(a["id"]), "depth": a["id"].count(".") ,
+                  "children": kids.get(a["id"], [])} for a in aims],
+        "claims": [claim_row(c) for c in claims],
+        "edges": [dict(src=e["src"], rel=e["rel"], dst=e["dst"], note=e["note"] or "")
+                  for e in con.execute("SELECT * FROM edge").fetchall()],
+        "branches": [dict(name=b["name"], status=b["status"] or "", mechanism=b["mechanism"] or "",
+                          end_condition=b["end_condition"] or "", updated=(b["updated"] or "")[:10])
+                     for b in con.execute("SELECT * FROM branch ORDER BY name").fetchall()],
+        "pending": [dict(pid=p["pid"], aim_id=p["aim_id"] or "", op=p["op"], payload=p["payload"] or "",
+                         rationale=p["rationale"] or "", by=p["proposed_by"] or "",
+                         at=(p["proposed_at"] or "")[:10])
+                    for p in con.execute("SELECT * FROM aim_pending WHERE status='pending' ORDER BY pid")],
+        "history": [dict(aim_id=h["aim_id"], old=h["old_verdict"] or "", new=h["new_verdict"] or "",
+                         why=h["why"] or "", by=h["by_who"] or "", at=(h["at"] or "")[:10])
+                    for h in con.execute("SELECT * FROM aim_history ORDER BY hid")],
+        "cards": list(cards.values()),
+        "verdicts": list(VERDICTS), "statuses": list(STATUSES), "kinds": list(KINDS), "dead": list(DEAD),
+    }
+
+APP_TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "lab-know-app.html")
+
+def cmd_app(a):
+    """Build the self-contained knowledge-map app: template + inlined export. No network, no CDN,
+    no build step — one HTML file that opens anywhere (and is CSP-safe as a claude.ai artifact)."""
+    if not os.path.isfile(APP_TEMPLATE): die(f"app template missing: {APP_TEMPLATE}")
+    data = export_data(connect())
+    blob = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")   # safe to inline in <script>
+    html = open(APP_TEMPLATE, encoding="utf-8").read().replace("__DATA__", blob)
+    if getattr(a, "fragment", False):
+        html = _fragment(html)                      # claude.ai artifacts must be page-content-only
+        out = a.out or os.path.join(LAB, "KNOWLEDGE_MAP.artifact.html")
+    else:
+        out = a.out or os.path.join(LAB, "KNOWLEDGE_MAP.html")
+    with open(out, "w", encoding="utf-8") as f: f.write(html)
+    print(f"lab know app: wrote {out}  ({len(data['aims'])} aims, {len(data['claims'])} claims, "
+          f"{len(data['cards'])} cards, {len(html)//1024} KB)")
+
+def cmd_export(a):
+    data = export_data(connect())
+    blob = json.dumps(data, ensure_ascii=False, indent=None if a.compact else 2)
+    if a.out:
+        with open(a.out, "w", encoding="utf-8") as f: f.write(blob)
+        n = data["counts"] if "counts" in data else ""
+        print(f"lab know export: wrote {a.out} "
+              f"({len(data['aims'])} aims, {len(data['claims'])} claims, {len(data['cards'])} cards)")
+    else:
+        sys.stdout.write(blob + "\n")
+
 AIMS_HTML = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Aims Tree</title><style>
 :root{--bg:#fff;--fg:#202124;--mut:#5f6368;--line:#e0e0e0;--panel:#f8f9fa;--dead:#c0392b;--warn:#f9ab00}
@@ -699,9 +793,17 @@ def _fragment(full):
     # <title>, <style>, and the <body> inner content; drop the doctype/html/head/body wrapper + <meta>.
     title = re.search(r"<title>.*?</title>", full, re.S)
     style = re.search(r"<style>.*?</style>", full, re.S)
-    body  = re.search(r"<body>(.*)</body>", full, re.S)
-    return (title.group(0) if title else "") + (style.group(0) if style else "") + \
-           (body.group(1) if body else full)
+    # Anchor on the REAL <body> element — the first one AFTER </head>. A naive `<body>(.*)</body>`
+    # latches onto any literal "<body>" appearing earlier in CSS/JS text (a comment or a selector
+    # string), silently capturing from mid-stylesheet and corrupting the fragment.
+    body, low = "", full.lower()
+    hend = low.find("</head>")
+    m = re.search(r"<body[^>]*>", full[hend:] if hend >= 0 else full, re.I)
+    if m:
+        start = (hend if hend >= 0 else 0) + m.end()
+        bend = low.rfind("</body>")
+        body = full[start:bend] if bend > start else full[start:]
+    return (title.group(0) if title else "") + (style.group(0) if style else "") + (body or full)
 
 def cmd_aim_render(a):
     con = connect()
@@ -727,6 +829,8 @@ def cmd_maint(a):
         print(f"  (lab-know-seed not found at {seed}; skipping re-seed)")
     cmd_aim_render(argparse.Namespace(out=None, fragment=False))
     cmd_aim_render(argparse.Namespace(out=None, fragment=True))
+    cmd_app(argparse.Namespace(out=None, fragment=False))     # the full knowledge-map app
+    cmd_app(argparse.Namespace(out=None, fragment=True))       # + its artifact-publishable fragment
     # card pointer-audit (spec §6): stat each claim.card, flag broken paths. stat only — never walks (NFS rule).
     con = connect(); total, broken = card_audit(con)
     if broken:
@@ -941,6 +1045,11 @@ def build_parser():
     ast.add_argument("--approved-by", dest="approved_by"); ast.set_defaults(fn=cmd_aim_set)
     asd = ams.add_parser("seed"); asd.add_argument("--file"); asd.add_argument("--commit", action="store_true")
     asd.set_defaults(fn=cmd_aim_seed)
+    ex = sub.add_parser("export"); ex.add_argument("--out"); ex.add_argument("--compact", action="store_true")
+    ex.set_defaults(fn=cmd_export)
+    ap = sub.add_parser("app"); ap.add_argument("--out"); ap.add_argument("--fragment", action="store_true")
+    ap.set_defaults(fn=cmd_app)
+
     arn = ams.add_parser("render"); arn.add_argument("--out")
     arn.add_argument("--fragment", action="store_true", help="page-content-only (for claude.ai artifacts)")
     arn.set_defaults(fn=cmd_aim_render)
