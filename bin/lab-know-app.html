@@ -1,0 +1,497 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Lab Knowledge Map</title>
+<style>
+:root{
+  --bg:#fff; --fg:#1f2328; --mut:#656d76; --line:#d8dee4; --panel:#f6f8fa; --panel2:#eef1f4;
+  --accent:#0969da; --dead:#cf222e; --warn:#9a6700; --ok:#1a7f37; --shadow:rgba(31,35,40,.12);
+  --v-proposed:#8c959f; --v-active:#0969da; --v-claimed:#1a7f37; --v-likely:#0e8a7d;
+  --v-falsified:#cf222e; --v-deferred:#bf8700; --v-retired:#8c959f;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#0d1117; --fg:#e6edf3; --mut:#9198a1; --line:#30363d; --panel:#161b22; --panel2:#21262d;
+  --accent:#4493f8; --dead:#ff7b72; --warn:#d29922; --ok:#3fb950; --shadow:rgba(0,0,0,.4);
+  --v-proposed:#8b949e; --v-active:#4493f8; --v-claimed:#3fb950; --v-likely:#39c5bb;
+  --v-falsified:#ff7b72; --v-deferred:#d29922; --v-retired:#6e7681;
+}}
+:root[data-theme=light]{--bg:#fff;--fg:#1f2328;--mut:#656d76;--line:#d8dee4;--panel:#f6f8fa;--panel2:#eef1f4;--accent:#0969da;--dead:#cf222e;--warn:#9a6700;--ok:#1a7f37;--shadow:rgba(31,35,40,.12);--v-proposed:#8c959f;--v-active:#0969da;--v-claimed:#1a7f37;--v-likely:#0e8a7d;--v-falsified:#cf222e;--v-deferred:#bf8700;--v-retired:#8c959f}
+:root[data-theme=dark]{--bg:#0d1117;--fg:#e6edf3;--mut:#9198a1;--line:#30363d;--panel:#161b22;--panel2:#21262d;--accent:#4493f8;--dead:#ff7b72;--warn:#d29922;--ok:#3fb950;--shadow:rgba(0,0,0,.4);--v-proposed:#8b949e;--v-active:#4493f8;--v-claimed:#3fb950;--v-likely:#39c5bb;--v-falsified:#ff7b72;--v-deferred:#d29922;--v-retired:#6e7681}
+
+*{box-sizing:border-box}
+/* The app owns its own full-height shell (#app), NOT <body> — so it behaves identically standalone
+   and when embedded as a page fragment where the host supplies the body. */
+body{margin:0;background:var(--bg);color:var(--fg);
+  font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif}
+#app{height:100vh;max-height:100vh;display:flex;flex-direction:column;overflow:hidden}
+a{color:var(--accent)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;border-bottom:1px solid var(--line);flex:0 0 auto;flex-wrap:wrap}
+header h1{margin:0;font-size:15px;font-weight:600;letter-spacing:-.01em;white-space:nowrap}
+.gen{font-size:12px;color:var(--mut);white-space:nowrap}
+.counts{display:flex;gap:10px;font-size:12px;color:var(--mut);flex-wrap:wrap;font-variant-numeric:tabular-nums}
+.counts b{color:var(--fg);font-weight:600}
+h1,h2{text-wrap:balance}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.node:focus-visible rect:first-of-type{stroke:var(--accent);stroke-width:2.5}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+.spacer{flex:1 1 auto}
+#q{padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);
+  min-width:190px;font-size:13px}
+#q:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.tabs{display:flex;gap:2px;padding:0 16px;border-bottom:1px solid var(--line);flex:0 0 auto;overflow-x:auto}
+.tab{padding:8px 13px;font-size:13px;color:var(--mut);border-bottom:2px solid transparent;white-space:nowrap}
+.tab[aria-selected=true]{color:var(--fg);border-bottom-color:var(--accent);font-weight:600}
+
+main{flex:1 1 auto;display:flex;min-height:0}
+#left{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;position:relative}
+#detail{flex:0 0 400px;border-left:1px solid var(--line);overflow-y:auto;padding:16px;background:var(--panel)}
+@media(max-width:900px){
+  main{flex-direction:column}
+  #detail{flex:0 0 auto;max-height:46%;border-left:0;border-top:1px solid var(--line)}
+}
+
+/* ---- tree ---- */
+#treewrap{flex:1 1 auto;min-height:0;position:relative;overflow:hidden}
+#svg{width:100%;height:100%;display:block;cursor:grab;touch-action:none}
+#svg.drag{cursor:grabbing}
+.node rect{stroke:var(--line);stroke-width:1;fill:var(--panel);transition:filter .12s}
+.node:hover rect{filter:brightness(1.06)}
+.node.sel rect{stroke:var(--accent);stroke-width:2.5}
+.node text{fill:var(--fg);font-size:12px;pointer-events:none}
+.node .nid{font-size:11px;font-weight:700;fill:var(--mut)}
+.node .cnt{font-size:10px;fill:var(--mut)}
+.link{fill:none;stroke:var(--line);stroke-width:1.6}
+.ctl{position:absolute;top:10px;right:10px;display:flex;gap:4px;z-index:5}
+.ctl button,.chipbtn{border:1px solid var(--line);background:var(--bg);border-radius:6px;padding:4px 9px;font-size:12px;color:var(--mut)}
+.ctl button:hover,.chipbtn:hover{color:var(--fg);border-color:var(--mut)}
+.legend{position:absolute;left:10px;bottom:10px;display:flex;gap:9px;flex-wrap:wrap;font-size:11px;
+  color:var(--mut);background:color-mix(in srgb,var(--bg) 88%,transparent);padding:5px 8px;border-radius:6px;
+  border:1px solid var(--line);max-width:calc(100% - 20px)}
+.legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:3px;vertical-align:-1px}
+
+/* ---- lists / tables ---- */
+#listwrap{flex:1 1 auto;min-height:0;overflow-y:auto;padding:12px 16px}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center}
+.chipbtn[aria-pressed=true]{background:var(--accent);color:#fff;border-color:var(--accent)}
+.row{padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:7px;cursor:pointer;background:var(--panel)}
+.row:hover{border-color:var(--mut)}
+.row.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.row .st{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.row .meta{font-size:11.5px;color:var(--mut);margin-top:3px;display:flex;gap:8px;flex-wrap:wrap}
+.stm{display:block;margin-top:2px}
+.dead .stm{text-decoration:line-through;opacity:.72}
+.empty{color:var(--mut);padding:24px;text-align:center;font-size:13px}
+
+/* ---- detail panel ---- */
+#detail h2{margin:0 0 2px;font-size:15px;line-height:1.35}
+#detail h3{margin:16px 0 6px;font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--mut)}
+.kv{margin:3px 0;font-size:13px;word-break:break-word}
+.kv b{color:var(--mut);font-weight:600;display:inline-block;min-width:74px;font-size:12px}
+.pill{display:inline-block;padding:1px 8px;border-radius:999px;font-size:11px;font-weight:700;
+  text-transform:uppercase;letter-spacing:.03em;color:#fff}
+.tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;background:var(--panel2);
+  color:var(--mut);border:1px solid var(--line)}
+.card-md{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:12px;margin-top:8px;
+  font-size:13px;overflow-x:auto}
+.card-md h1,.card-md h2,.card-md h3{margin:12px 0 5px;font-size:13.5px;text-transform:none;letter-spacing:0;color:var(--fg)}
+.card-md h1:first-child{margin-top:0}
+.card-md pre{background:var(--panel2);padding:9px;border-radius:6px;overflow-x:auto;font-size:12px;margin:7px 0}
+.card-md code{background:var(--panel2);padding:1px 4px;border-radius:3px;font-size:12px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.card-md pre code{background:none;padding:0}
+.card-md ul,.card-md ol{margin:6px 0;padding-left:20px}
+.card-md p{margin:6px 0}
+.card-md hr{border:0;border-top:1px solid var(--line);margin:10px 0}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
+.note{font-size:12px;color:var(--mut);margin-top:4px}
+.warnbox{border-left:3px solid var(--warn);padding:5px 9px;background:var(--panel2);border-radius:0 6px 6px 0;
+  font-size:12.5px;margin:6px 0}
+.deadbox{border-left:3px solid var(--dead);padding:5px 9px;background:var(--panel2);border-radius:0 6px 6px 0;
+  font-size:12.5px;margin:6px 0}
+.linkbtn{color:var(--accent);cursor:pointer;text-decoration:underline;font-size:12.5px}
+</style></head><body>
+<div id="app">
+<header>
+  <h1>Lab Knowledge Map</h1>
+  <span class="gen" id="gen"></span>
+  <div class="counts" id="counts"></div>
+  <span class="spacer"></span>
+  <input id="q" type="search" placeholder="Search claims, aims, cards…" autocomplete="off">
+</header>
+
+<div class="tabs" role="tablist">
+  <button class="tab" role="tab" data-view="tree"     aria-selected="true">Aims tree</button>
+  <button class="tab" role="tab" data-view="claims"   aria-selected="false">Claims</button>
+  <button class="tab" role="tab" data-view="cards"    aria-selected="false">Cards</button>
+</div>
+
+<main>
+  <div id="left">
+    <div id="treewrap">
+      <svg id="svg"><g id="scene"></g></svg>
+      <div class="ctl">
+        <button id="fit" title="Fit to view">Fit</button>
+        <button id="zin" title="Zoom in">+</button>
+        <button id="zout" title="Zoom out">&minus;</button>
+      </div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div id="listwrap" hidden>
+      <div class="filters" id="filters"></div>
+      <div id="list"></div>
+    </div>
+  </div>
+  <aside id="detail"><div class="empty">Select a node or claim to see its detail.</div></aside>
+</main>
+</div>
+
+<script id="data" type="application/json">__DATA__</script>
+<script>
+"use strict";
+const DATA = JSON.parse(document.getElementById("data").textContent);
+
+/* ---------- helpers ---------- */
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const el = (t, a, h) => { const n = document.createElement(t); if (a) for (const k in a) n.setAttribute(k, a[k]);
+  if (h != null) n.innerHTML = h; return n; };
+const trunc = (s, n) => (s = String(s || "").trim(), s.length <= n ? s : s.slice(0, n - 1).replace(/\s\S*$/, "") + "…");
+
+const VC = { proposed:"--v-proposed", active:"--v-active", claimed:"--v-claimed", likely:"--v-likely",
+             falsified:"--v-falsified", deferred:"--v-deferred", retired:"--v-retired" };
+const vcolor = v => `var(${VC[v] || "--v-proposed"})`;
+const SC = { holds:"--ok", open:"--mut", null:"--mut", retracted:"--dead", superseded:"--warn", confounded:"--warn" };
+const scolor = s => `var(${SC[s] || "--mut"})`;
+
+/* ---------- indexes ---------- */
+const aimById = new Map(DATA.aims.map(a => [a.id, a]));
+const claimById = new Map(DATA.claims.map(c => [c.id, c]));
+const cardByPath = new Map(DATA.cards.map(c => [c.path, c]));
+const claimsByAim = new Map();
+for (const c of DATA.claims) if (c.aim) { if (!claimsByAim.has(c.aim)) claimsByAim.set(c.aim, []); claimsByAim.get(c.aim).push(c); }
+const liveOf = a => (claimsByAim.get(a.id) || []).filter(c => !c.dead);
+
+let sel = null;                       // {kind:'aim'|'claim'|'card'|'branch', id}
+let view = "tree";
+let query = "";
+const filters = { status:new Set(), kind:new Set(), only:null };
+
+/* ---------- minimal, escaping-first markdown (cards are agent-authored: never trust) ---------- */
+function md(src){
+  const lines = String(src || "").replace(/\r\n?/g, "\n").split("\n");
+  let out = "", inCode = false, listType = null;
+  const closeList = () => { if (listType) { out += listType === "ul" ? "</ul>" : "</ol>"; listType = null; } };
+  const inline = t => {
+    t = esc(t);
+    t = t.replace(/`([^`]+)`/g, (m, c) => "<code>" + c + "</code>");
+    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    t = t.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+    // links: only http(s) get an anchor; anything else stays literal text
+    t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      (m, txt, url) => `<a href="${url}" target="_blank" rel="noopener noreferrer">${txt}</a>`);
+    return t;
+  };
+  for (const raw of lines) {
+    if (/^\s*```/.test(raw)) { if (inCode) { out += "</code></pre>"; inCode = false; } else { closeList(); out += "<pre><code>"; inCode = true; } continue; }
+    if (inCode) { out += esc(raw) + "\n"; continue; }
+    const h = raw.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeList(); const n = Math.min(h[1].length + 2, 6); out += `<h${n}>${inline(h[2])}</h${n}>`; continue; }
+    if (/^\s*(---|\*\*\*|___)\s*$/.test(raw)) { closeList(); out += "<hr>"; continue; }
+    const ul = raw.match(/^\s*[-*+]\s+(.*)$/), ol = raw.match(/^\s*\d+[.)]\s+(.*)$/);
+    if (ul) { if (listType !== "ul") { closeList(); out += "<ul>"; listType = "ul"; } out += `<li>${inline(ul[1])}</li>`; continue; }
+    if (ol) { if (listType !== "ol") { closeList(); out += "<ol>"; listType = "ol"; } out += `<li>${inline(ol[1])}</li>`; continue; }
+    if (!raw.trim()) { closeList(); continue; }
+    closeList(); out += `<p>${inline(raw)}</p>`;
+  }
+  if (inCode) out += "</code></pre>";
+  closeList();
+  return out;
+}
+
+/* ---------- tree layout (hand-rolled: 14 nodes needs no graph library) ---------- */
+const NW = 244, NH = 52, GAPX = 74, GAPY = 15;
+function layout(){
+  const roots = DATA.aims.filter(a => !a.parent || !aimById.has(a.parent));
+  const nodes = [], links = [];
+  let cursor = 0;
+  const walk = (a, depth) => {
+    const kids = (a.children || []).filter(k => aimById.has(k)).map(k => aimById.get(k));
+    const n = { a, depth, x: depth * (NW + GAPX), y: 0 };
+    if (!kids.length) { n.y = cursor; cursor += NH + GAPY; }
+    else {
+      const cy = kids.map(k => walk(k, depth + 1));
+      n.y = (cy[0] + cy[cy.length - 1]) / 2;
+      for (const k of kids) links.push([n.a.id, k.id]);
+    }
+    nodes.push(n);
+    return n.y;
+  };
+  for (const r of roots) { walk(r, 0); cursor += 10; }
+  const pos = new Map(nodes.map(n => [n.a.id, n]));
+  return { nodes, links, pos };
+}
+
+const svg = document.getElementById("svg"), scene = document.getElementById("scene");
+let vb = { x:0, y:0, w:1000, h:600 }, fitBox = null;
+const applyVB = () => svg.setAttribute("viewBox", `${vb.x} ${vb.y} ${vb.w} ${vb.h}`);
+const SVGNS = "http://www.w3.org/2000/svg";
+const mk = (t, a) => { const n = document.createElementNS(SVGNS, t); for (const k in a) n.setAttribute(k, a[k]); return n; };
+
+function renderTree(){
+  const { nodes, links, pos } = layout();
+  scene.textContent = "";
+  for (const [s, d] of links) {
+    const a = pos.get(s), b = pos.get(d); if (!a || !b) continue;
+    const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2, mx = (x1 + x2) / 2;
+    scene.appendChild(mk("path", { class:"link", d:`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}` }));
+  }
+  for (const n of nodes) {
+    const a = n.a, live = liveOf(a).length, all = (claimsByAim.get(a.id) || []).length;
+    const g = mk("g", { class:"node" + (sel && sel.kind === "aim" && sel.id === a.id ? " sel" : ""),
+                        transform:`translate(${n.x},${n.y})`, tabindex:"0", role:"button",
+                        "data-aim": a.id, "aria-label": `Aim ${a.id}: ${a.title}` });
+    g.appendChild(mk("rect", { width:NW, height:NH, rx:8 }));
+    g.appendChild(mk("rect", { width:4, height:NH, rx:2, fill:vcolor(a.verdict) }));
+    const id = mk("text", { class:"nid", x:13, y:18 }); id.textContent = a.id; g.appendChild(id);
+    const vd = mk("text", { x:NW - 12, y:18, "text-anchor":"end", "font-size":"10.5", "font-weight":"700",
+                            fill:vcolor(a.verdict) }); vd.textContent = a.verdict.toUpperCase(); g.appendChild(vd);
+    const t1 = mk("text", { x:13, y:34 }); t1.textContent = trunc(a.title, 33); g.appendChild(t1);
+    const c = mk("text", { class:"cnt", x:13, y:46 });
+    c.textContent = all ? `${live} evidence${all > live ? ` (+${all - live} struck)` : ""}` : "no evidence";
+    g.appendChild(c);
+    g.addEventListener("click", () => select("aim", a.id));
+    g.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select("aim", a.id); } });
+    scene.appendChild(g);
+  }
+  const maxX = Math.max(...nodes.map(n => n.x + NW), 400), maxY = Math.max(...nodes.map(n => n.y + NH), 300);
+  fitBox = { x:-24, y:-24, w:maxX + 48, h:maxY + 48 };
+  if (!renderTree.done) { fit(); renderTree.done = true; }
+}
+let fitOK = false;
+function fit(){
+  if (!fitBox) return;
+  const r = svg.getBoundingClientRect();
+  // The container can legitimately have no layout yet (hidden tab, iframe/artifact embed, pre-paint).
+  // Falling back to the content box keeps the viewBox non-degenerate — a 0x0 viewBox renders BLANK.
+  const W = r.width  > 0 ? r.width  : fitBox.w;
+  const H = r.height > 0 ? r.height : fitBox.h;
+  fitOK = r.width > 0 && r.height > 0;
+  const sc = Math.max(fitBox.w / W, fitBox.h / H, 1e-6);
+  vb = { x:fitBox.x, y:fitBox.y + (fitBox.h - sc * H) / 2, w:sc * W, h:sc * H };
+  applyVB();
+}
+function zoom(f, cx, cy){ const r = svg.getBoundingClientRect();
+  const px = cx == null ? vb.x + vb.w / 2 : vb.x + (cx - r.left) / r.width * vb.w;
+  const py = cy == null ? vb.y + vb.h / 2 : vb.y + (cy - r.top) / r.height * vb.h;
+  const nw = Math.min(Math.max(vb.w * f, 120), 20000), nh = nw * (vb.h / vb.w);
+  vb = { x:px - (px - vb.x) * (nw / vb.w), y:py - (py - vb.y) * (nh / vb.h), w:nw, h:nh }; applyVB(); }
+svg.addEventListener("wheel", e => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY); }, { passive:false });
+/* Pan, WITHOUT stealing clicks. setPointerCapture() on pointerdown retargets the following `click`
+   to the capture element, so a per-node click handler never fires — nodes became unselectable.
+   Capture only once the pointer has actually travelled (a real pan); a tap stays a tap. */
+let drag = null, panning = false;
+svg.addEventListener("pointerdown", e => { drag = { x:e.clientX, y:e.clientY, id:e.pointerId }; panning = false; });
+svg.addEventListener("pointermove", e => {
+  if (!drag) return;
+  if (!panning) {
+    if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 4) return;   // still a click
+    panning = true; svg.classList.add("drag");
+    try { svg.setPointerCapture(drag.id); } catch (_) {}
+  }
+  const r = svg.getBoundingClientRect();
+  vb.x -= (e.clientX - drag.x) / r.width * vb.w; vb.y -= (e.clientY - drag.y) / r.height * vb.h;
+  drag = { x:e.clientX, y:e.clientY, id:drag.id }; applyVB();
+});
+const endDrag = () => {
+  if (drag && panning) { try { svg.releasePointerCapture(drag.id); } catch (_) {} }
+  drag = null; svg.classList.remove("drag");     // `panning` persists so the trailing click is swallowed
+};
+svg.addEventListener("pointerup", endDrag); svg.addEventListener("pointercancel", endDrag);
+// a genuine pan must not also select whatever was under the cursor; pointerdown resets the flag
+svg.addEventListener("click", e => { if (panning) { e.stopPropagation(); panning = false; } }, true);
+document.getElementById("fit").onclick = fit;
+document.getElementById("zin").onclick = () => zoom(1 / 1.25);
+document.getElementById("zout").onclick = () => zoom(1.25);
+
+/* ---------- detail panel ---------- */
+function pill(text, color){ return `<span class="pill" style="background:${color}">${esc(text)}</span>`; }
+function claimLine(c){
+  return `<div class="row ${c.dead ? "dead" : ""}" data-claim="${esc(c.id)}">
+    <span class="st" style="color:${scolor(c.status)}">${esc(c.status)}</span>
+    <span class="stm">${esc(trunc(c.statement, 190))}</span>
+    <div class="meta">
+      ${c.kind ? `<span class="tag">${esc(c.kind)}</span>` : ""}
+      ${c.card ? `<span class="tag">card</span>` : (c.card_waiver ? `<span class="tag">waived</span>` : "")}
+      ${c.aim ? `<span>aim ${esc(c.aim)}</span>` : `<span>unlinked</span>`}
+      ${c.author ? `<span>${esc(c.author)}</span>` : ""}${c.date ? `<span>${esc(c.date)}</span>` : ""}
+    </div></div>`;
+}
+function detailAim(a){
+  const live = liveOf(a), all = claimsByAim.get(a.id) || [], dead = all.filter(c => c.dead);
+  const hist = DATA.history.filter(h => h.aim_id === a.id);
+  const pend = DATA.pending.filter(p => p.aim_id === a.id);
+  const kids = (a.children || []).filter(k => aimById.has(k));
+  let h = `<div>${pill(a.verdict, vcolor(a.verdict))} <span class="mono">${esc(a.id)}</span></div>
+    <h2 style="margin-top:8px">${esc(a.title)}</h2>`;
+  if (a.why) h += `<div class="warnbox"><b>Why:</b> ${esc(a.why)}</div>`;
+  if (a.note) h += `<div class="note">${esc(a.note)}</div>`;
+  h += `<div class="kv" style="margin-top:8px"><b>updated</b> ${esc(a.updated || "—")} ${a.updated_by ? "by " + esc(a.updated_by) : ""}</div>`;
+  if (a.parent) h += `<div class="kv"><b>parent</b> <span class="linkbtn" data-aim="${esc(a.parent)}">${esc(a.parent)}</span></div>`;
+  if (kids.length) h += `<div class="kv"><b>children</b> ${kids.map(k => `<span class="linkbtn" data-aim="${esc(k)}">${esc(k)}</span>`).join(" · ")}</div>`;
+  if (pend.length){
+    h += `<h3>Pending tree edits (need Zac's approval)</h3>`;
+    for (const p of pend) h += `<div class="warnbox"><b>#${p.pid} ${esc(p.op)}</b> — ${esc(p.rationale || "")}
+      <div class="note">by ${esc(p.by)} ${esc(p.at)}</div></div>`;
+  }
+  h += `<h3>Evidence (${live.length}${dead.length ? ` live · ${dead.length} struck` : ""})</h3>`;
+  h += all.length ? all.map(claimLine).join("") : `<div class="note">No claims logged onto this aim yet.</div>`;
+  if (hist.length){
+    h += `<h3>Verdict history</h3>`;
+    for (const x of hist) h += `<div class="kv" style="font-size:12.5px">${esc(x.old || "—")} → <b style="color:${vcolor(x.new)}">${esc(x.new)}</b>
+      ${x.why ? "· " + esc(trunc(x.why, 120)) : ""} <span class="note">${esc(x.by)} ${esc(x.at)}</span></div>`;
+  }
+  return h;
+}
+function detailClaim(c){
+  let h = `<div>${pill(c.status, scolor(c.status))} ${c.kind ? `<span class="tag">${esc(c.kind)}</span>` : ""}
+      ${c.verified ? `<span class="tag" style="color:var(--ok)">verified</span>` : ""}</div>
+    <h2 style="margin-top:8px" ${c.dead ? 'class="dead"' : ""}>${esc(c.statement)}</h2>`;
+  if (c.dead) h += `<div class="deadbox"><b>${esc(c.status)}</b>${c.status_reason ? " — " + esc(c.status_reason) : ""}
+      ${c.successor ? `<div class="note">superseded by <span class="linkbtn" data-claim="${esc(c.successor)}">${esc(c.successor)}</span></div>` : ""}</div>`;
+  if (c.detail) h += `<div class="note" style="margin-top:6px">${esc(c.detail)}</div>`;
+  h += `<h3>Setting (the conditions that produced it)</h3><div class="kv">${esc(c.setting || "—")}</div>`;
+  if (c.evidence) h += `<h3>Evidence</h3><div class="kv">${esc(c.evidence)}</div>`;
+  h += `<h3>Provenance</h3>`;
+  for (const [k, v] of [["id", c.id], ["aim", c.aim], ["branch", c.branch], ["author", c.author],
+                        ["date", c.date], ["source", c.source], ["created", (c.created || "").slice(0,10)]])
+    if (v) h += `<div class="kv"><b>${k}</b> ${k === "aim" ? `<span class="linkbtn" data-aim="${esc(v)}">${esc(v)}</span>` : esc(v)}</div>`;
+  if (c.verified_how) h += `<div class="kv"><b>verified</b> ${esc(c.verified_how)}</div>`;
+  h += `<h3>Experiment card</h3>`;
+  if (c.card){
+    const card = cardByPath.get(c.card);
+    h += `<div class="kv mono">${esc(c.card)}</div>`;
+    if (!card || !card.exists) h += `<div class="deadbox">Card pointer is BROKEN — file missing on disk.</div>`;
+    else h += `<div class="linkbtn" data-card="${esc(c.card)}">open card ↓</div><div class="card-md">${md(card.text)}</div>`;
+  } else if (c.card_waiver){
+    h += `<div class="warnbox">No card — waived: ${esc(c.card_waiver)}</div>`;
+  } else if (c.kind === "result" && c.status === "holds"){
+    h += `<div class="warnbox">No card and no waiver — this is in the <span class="mono">lab claim review --no-card</span> backfill queue.</div>`;
+  } else h += `<div class="note">Not required for kind <b>${esc(c.kind || "?")}</b> (cards are required only for results promoted to holds).</div>`;
+  const rel = DATA.edges.filter(e => e.src === c.id || e.dst === c.id);
+  if (rel.length){
+    h += `<h3>Related</h3>`;
+    for (const e of rel){
+      const other = e.src === c.id ? e.dst : e.src, dir = e.src === c.id ? "→" : "←";
+      h += `<div class="kv" style="font-size:12.5px">${esc(e.rel)} ${dir} <span class="linkbtn" data-claim="${esc(other)}">${esc(trunc((claimById.get(other) || {}).statement || other, 80))}</span></div>`;
+    }
+  }
+  return h;
+}
+function detailCard(path){
+  const card = cardByPath.get(path); if (!card) return `<div class="empty">Card not found.</div>`;
+  let h = `<h2>Experiment card</h2><div class="kv mono">${esc(card.path)}</div>`;
+  h += `<div class="kv"><b>backs</b> ${card.claims.map(id => `<span class="linkbtn" data-claim="${esc(id)}">${esc(id)}</span>`).join(" · ")}</div>`;
+  if (!card.exists) return h + `<div class="deadbox">Pointer BROKEN — file missing on disk.</div>`;
+  if (card.error) h += `<div class="warnbox">${esc(card.error)}</div>`;
+  return h + `<div class="card-md">${md(card.text)}</div>`;
+}
+function renderDetail(){
+  const d = document.getElementById("detail");
+  if (!sel){ d.innerHTML = `<div class="empty">Select a node or claim to see its detail.</div>`; return; }
+  d.innerHTML = sel.kind === "aim"   ? detailAim(aimById.get(sel.id) || {})
+              : sel.kind === "claim" ? detailClaim(claimById.get(sel.id) || {})
+              : sel.kind === "card"  ? detailCard(sel.id) : "";
+  d.scrollTop = 0;
+}
+function select(kind, id){ sel = { kind, id }; renderDetail(); if (view === "tree") renderTree(); else renderList(); }
+document.addEventListener("click", e => {
+  const a = e.target.closest("[data-aim]"), c = e.target.closest("[data-claim]"), k = e.target.closest("[data-card]");
+  if (k) { select("card", k.getAttribute("data-card")); return; }
+  if (c) { select("claim", c.getAttribute("data-claim")); return; }
+  if (a) { const id = a.getAttribute("data-aim"); if (aimById.has(id)) { setView("tree"); select("aim", id); } }
+});
+
+/* ---------- list views ---------- */
+function matches(c){
+  if (!query) return true;
+  const q = query.toLowerCase();
+  return [c.id, c.statement, c.setting, c.evidence, c.author, c.aim, c.branch, c.kind, c.status, c.detail]
+    .some(v => String(v || "").toLowerCase().includes(q));
+}
+function renderFilters(){
+  const f = document.getElementById("filters");
+  if (view !== "claims") { f.hidden = true; return; }
+  f.hidden = false;
+  const btn = (label, on, fn) => { const b = el("button", { class:"chipbtn", "aria-pressed":String(on) }, esc(label));
+    b.onclick = () => { fn(); renderList(); }; return b; };
+  f.textContent = "";
+  for (const s of DATA.statuses)
+    f.appendChild(btn(s, filters.status.has(s), () => filters.status.has(s) ? filters.status.delete(s) : filters.status.add(s)));
+  f.appendChild(el("span", { style:"width:10px" }));
+  for (const k of DATA.kinds)
+    f.appendChild(btn(k, filters.kind.has(k), () => filters.kind.has(k) ? filters.kind.delete(k) : filters.kind.add(k)));
+  f.appendChild(el("span", { style:"width:10px" }));
+  f.appendChild(btn("unlinked to an aim", filters.only === "orphan", () => filters.only = filters.only === "orphan" ? null : "orphan"));
+  f.appendChild(btn("needs a card", filters.only === "nocard", () => filters.only = filters.only === "nocard" ? null : "nocard"));
+  f.appendChild(btn("has a card", filters.only === "card", () => filters.only = filters.only === "card" ? null : "card"));
+}
+function renderList(){
+  const L = document.getElementById("list");
+  renderFilters();
+  if (view === "claims"){
+    let rows = DATA.claims.filter(matches);
+    if (filters.status.size) rows = rows.filter(c => filters.status.has(c.status));
+    if (filters.kind.size)   rows = rows.filter(c => filters.kind.has(c.kind));
+    if (filters.only === "orphan") rows = rows.filter(c => c.orphan);
+    if (filters.only === "card")   rows = rows.filter(c => c.card);
+    if (filters.only === "nocard") rows = rows.filter(c => c.kind === "result" && c.status === "holds" && !c.card && !c.card_waiver);
+    const order = { holds:0, open:1, null:2, confounded:3, superseded:4, retracted:5 };
+    rows.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || String(b.date).localeCompare(String(a.date)));
+    L.innerHTML = rows.length ? `<div class="note" style="margin-bottom:8px">${rows.length} claim(s)</div>` + rows.map(claimLine).join("")
+                              : `<div class="empty">No claims match.</div>`;
+  } else if (view === "cards"){
+    const cs = DATA.cards.filter(c => !query || (c.path + " " + c.text).toLowerCase().includes(query.toLowerCase()));
+    L.innerHTML = cs.length ? cs.map(c => `<div class="row" data-card="${esc(c.path)}">
+        <span class="st" style="color:${c.exists ? "var(--ok)" : "var(--dead)"}">${c.exists ? "ok" : "BROKEN"}</span>
+        <span class="stm mono">${esc(c.path)}</span>
+        <div class="meta"><span>backs ${c.claims.length} claim(s)</span>${c.error ? `<span>${esc(c.error)}</span>` : ""}</div>
+      </div>`).join("") : `<div class="empty">No experiment cards yet. Scaffold one: <span class="mono">lab card new &lt;dir&gt; --claim &lt;id&gt;</span></div>`;
+  }
+}
+
+/* ---------- shell ---------- */
+function setView(v){
+  view = v;
+  for (const t of document.querySelectorAll(".tab")) t.setAttribute("aria-selected", String(t.dataset.view === v));
+  document.getElementById("treewrap").hidden = v !== "tree";
+  document.getElementById("listwrap").hidden = v === "tree";
+  if (v === "tree") renderTree(); else renderList();
+}
+for (const t of document.querySelectorAll(".tab")) t.onclick = () => setView(t.dataset.view);
+document.getElementById("q").addEventListener("input", e => {
+  query = e.target.value.trim();
+  if (query && view === "tree") setView("claims"); else if (view !== "tree") renderList();
+});
+
+(function init(){
+  document.getElementById("gen").textContent = "generated " + (DATA.generated || "").replace("T", " ").replace("Z", " UTC");
+  const nocard = DATA.claims.filter(c => c.kind === "result" && c.status === "holds" && !c.card && !c.card_waiver).length;
+  const broken = DATA.cards.filter(c => !c.exists).length;
+  document.getElementById("counts").innerHTML =
+    `<span><b>${DATA.aims.length}</b> aims</span><span><b>${DATA.claims.length}</b> claims</span>` +
+    `<span><b>${DATA.claims.filter(c => c.status === "holds").length}</b> holds</span>` +
+    `<span><b>${DATA.cards.length}</b> cards</span>` +
+    (nocard ? `<span style="color:var(--warn)"><b>${nocard}</b> need a card</span>` : "") +
+    (broken ? `<span style="color:var(--dead)"><b>${broken}</b> broken pointer</span>` : "") +
+    (DATA.pending.length ? `<span style="color:var(--warn)"><b>${DATA.pending.length}</b> pending approval</span>` : "");
+  document.getElementById("legend").innerHTML = DATA.verdicts
+    .map(v => `<span><i style="background:${vcolor(v)}"></i>${esc(v)}</span>`).join("");
+  renderTree();
+  // If the first fit ran before layout existed, retry once painted and on resize — otherwise a
+  // degenerate viewBox would leave the tree invisible with no way for the user to recover it.
+  const refit = () => { if (!fitOK) fit(); };
+  requestAnimationFrame(refit); setTimeout(refit, 120);
+  window.addEventListener("resize", () => { if (view === "tree") refit(); });
+})();
+</script></body></html>
