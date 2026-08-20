@@ -217,8 +217,11 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("start", help="open a migration and run precheck")
     s.add_argument("--id"); s.add_argument("--new-job", dest="new_job")
-    s.add_argument("--deadline-hours", dest="deadline_hours", type=int, default=8)
-    s.add_argument("--force-at", dest="force_at", type=int, default=2)
+    # defaults come from lab.env (LAB_NODE_*), so the node can be retuned between rotations
+    s.add_argument("--deadline-hours", dest="deadline_hours", type=int,
+                   default=int(os.environ.get("LAB_NODE_WARN_HOURS", 8)))
+    s.add_argument("--force-at", dest="force_at", type=int,
+                   default=int(os.environ.get("LAB_NODE_FORCE_AT_HOURS", 2)))
     s.add_argument("--no-notify", action="store_true"); s.set_defaults(fn=cmd_start)
     c = sub.add_parser("precheck", help="classify sessions, notify, print the table")
     c.add_argument("--id"); c.add_argument("--no-notify", dest="notify", action="store_false")
