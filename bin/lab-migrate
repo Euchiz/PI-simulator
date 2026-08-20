@@ -1,0 +1,235 @@
+#!/usr/bin/env python3
+"""lab-migrate — drain a node's sessions and re-attach them on a fresh one.
+
+Spec: ~/lab/decisions/compute-node-mode-design.md
+
+This half (start/precheck/status/close/force) DRAINS: it classifies every session, asks the ones
+that can be reached to wrap up, and records who is safe to move. It never kills a process and never
+resumes anything — `move`/`aftercheck` do that, on the NEW node.
+"""
+import argparse, glob, json, os, re, subprocess, sys, datetime
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+MIG  = os.path.join(LAB, "migrate")
+WATCH= os.path.join(LAB, ".watch")
+PROJ = os.path.join(HOME, ".claude", "projects")
+BIN  = os.path.dirname(os.path.abspath(__file__))
+
+def now():  return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+def die(m): print(f"lab migrate: {m}", file=sys.stderr); sys.exit(1)
+def pkey(s): return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+
+# ---------- inputs ----------
+def sessions():
+    """Every session Claude Code knows about, from `claude agents --json`."""
+    try:
+        out = subprocess.run(["claude","agents","--json","--all"], capture_output=True, text=True, timeout=120)
+        return json.loads(out.stdout or "[]")
+    except Exception as e:
+        die(f"could not enumerate sessions ({e}). Is `claude` on PATH?")
+
+def transcript_for(sid):
+    """Transcripts are stored per-PROJECT (keyed by cwd), so search every project dir."""
+    hits = glob.glob(os.path.join(PROJ, "*", f"{sid}.jsonl"))
+    return hits[0] if hits else None
+
+def lab_agents():
+    """name -> job-id, from the roster. Only these have inboxes we can message."""
+    m = {}
+    try:
+        with open(os.path.join(LAB, ".roster.tsv")) as f:
+            for line in f:
+                p = line.rstrip("\n").split("\t")
+                if len(p) >= 2: m[pkey(p[1])] = p[0]
+    except OSError: pass
+    return m
+
+def watcher_alive(name):
+    f = os.path.join(WATCH, f"{pkey(name)}.lock")
+    try:
+        pid = int(open(f).read().split()[0])
+        os.kill(pid, 0); return True
+    except Exception: return False
+
+# ---------- registry ----------
+def mig_dir(mid):    return os.path.join(MIG, mid)
+def status_dir(mid): return os.path.join(mig_dir(mid), "status")
+def current_mid():
+    """The newest migration that has not been finalised."""
+    if not os.path.isdir(MIG): return None
+    ms = sorted(d for d in os.listdir(MIG) if os.path.isdir(os.path.join(MIG,d)))
+    for m in reversed(ms):
+        man = os.path.join(mig_dir(m), "manifest.json")
+        if os.path.isfile(man):
+            try:
+                if not json.load(open(man)).get("finalised"): return m
+            except Exception: pass
+    return None
+
+def write_status(mid, agent, **kw):
+    os.makedirs(status_dir(mid), exist_ok=True)
+    p = os.path.join(status_dir(mid), f"{pkey(agent)}.json")
+    cur = {}
+    if os.path.isfile(p):
+        try: cur = json.load(open(p))
+        except Exception: pass
+    cur.update(kw); cur["agent"] = agent; cur["updated"] = now()
+    tmp = f"{p}.{os.getpid()}.tmp"                 # one file per session; never a shared file
+    with open(tmp,"w") as f: json.dump(cur, f, indent=2)
+    os.replace(tmp, p)
+    return cur
+
+def read_all(mid):
+    out = []
+    for p in sorted(glob.glob(os.path.join(status_dir(mid), "*.json"))):
+        try: out.append(json.load(open(p)))
+        except Exception: pass
+    return out
+
+# ---------- classification ----------
+def classify(s, roster):
+    """-> (class, status, note). Never kills, never resumes; read-only."""
+    name, sid = s.get("name") or s.get("id"), s.get("sessionId","")
+    txt = transcript_for(sid)
+    if not txt:
+        return "unmigratable", "failed", "no transcript on disk — cannot be resumed"
+    is_lab = pkey(name) in roster
+    if s.get("state") == "working":
+        if is_lab and watcher_alive(name):
+            return "active-watched", "pending", "reachable — wrap-up message sent"
+        return "active-unwatched", "pending", "ACTIVE but not reachable — close this one by hand"
+    return "static", "closed", "idle at classification time — nothing to wrap up"
+
+WRAPUP = """TOP-PRIORITY — node termination in ~{hours}h.
+
+The node this lab runs on is ending. Your transcript will be migrated to a new node as a new
+session; your conversation and your lab identity carry over, your running processes do NOT.
+
+Do this now, then stop:
+ 1. stop starting new work
+ 2. commit and push anything uncommitted
+ 3. register any dataset/tool you produced (lab data add / lab tool add) and log results as claims
+ 4. PRINT YOUR IN-FLIGHT SBATCH JOB IDS INTO THIS CONVERSATION so the resumed session can find them
+    (they survive the node; you will not be here to collect them)
+ 5. close your shells and monitors
+ 6. run:  lab migrate close
+
+If you do not register by the deadline you will be force-closed and may lose uncommitted work."""
+
+# ---------- commands ----------
+def cmd_start(a):
+    mid = a.id or datetime.datetime.now().strftime("manual-%Y%m%d-%H%M%S")
+    os.makedirs(status_dir(mid), exist_ok=True)
+    man = {"migration_id": mid, "created": now(), "old_node": os.uname().nodename,
+           "old_job": os.environ.get("SLURM_JOB_ID",""), "new_job": a.new_job or "",
+           "deadline_hours": a.deadline_hours, "force_at_hours": a.force_at,
+           "finalised": False}
+    json.dump(man, open(os.path.join(mig_dir(mid),"manifest.json"),"w"), indent=2)
+    print(f"migration {mid} opened  (deadline ~{a.deadline_hours}h, force at T-{a.force_at}h)")
+    return cmd_precheck(argparse.Namespace(id=mid, notify=not a.no_notify, quiet=False))
+
+def cmd_precheck(a):
+    mid = a.id or current_mid() or die("no open migration — run `lab migrate start` first")
+    roster = lab_agents()
+    try: hours = json.load(open(os.path.join(mig_dir(mid),"manifest.json"))).get("deadline_hours",8)
+    except Exception: hours = 8
+    rows, notified = [], 0
+    for s in sessions():
+        name = s.get("name") or s.get("id")
+        cls, st, note = classify(s, roster)
+        prev = None
+        p = os.path.join(status_dir(mid), f"{pkey(name)}.json")
+        if os.path.isfile(p):
+            try: prev = json.load(open(p))
+            except Exception: pass
+        # never downgrade a session that already registered itself closed/forced
+        if prev and prev.get("status") in ("closed","forced") and prev.get("by") in ("self","force"):
+            st, note, cls = prev["status"], prev.get("note",note), prev.get("class",cls)
+        else:
+            if cls == "active-watched" and getattr(a,"notify",True):
+                try:
+                    subprocess.run([os.path.join(BIN,"lab"),"send",pkey(name),
+                                    "TOP-PRIORITY: node ending — wrap up and register Closed",
+                                    WRAPUP.format(hours=hours)], capture_output=True, timeout=60)
+                    notified += 1
+                except Exception: pass
+            write_status(mid, name, status=st, **{"class":cls}, note=note,
+                         session_id=s.get("sessionId"), short_id=s.get("id"),
+                         cwd=s.get("cwd"), transcript=transcript_for(s.get("sessionId","")),
+                         state_at_check=s.get("state"), is_lab=pkey(name) in roster,
+                         by="precheck" if st!="pending" else None)
+        rows.append((name, cls, st, note))
+
+    if not getattr(a,"quiet",False):
+        print(f"\n=== migration {mid} — precheck ===")
+        print(f"  {'agent':<16} {'class':<18} {'status':<12} note")
+        for n,c,st,note in sorted(rows, key=lambda r:(r[2]!="pending", r[0])):
+            print(f"  {str(n)[:16]:<16} {c:<18} {st:<12} {note}")
+        pend = [r for r in rows if r[2]=="pending"]
+        hand = [r for r in rows if r[1]=="active-unwatched"]
+        bad  = [r for r in rows if r[1]=="unmigratable"]
+        print(f"\n  {len(rows)} session(s) · {len(pend)} pending · {notified} wrap-up message(s) sent")
+        if hand:
+            print("\n  ⚠ CLOSE THESE BY HAND — active with no watcher, cannot be reached automatically:")
+            for n,_,_,_ in hand: print(f"      {n}")
+        if bad:
+            print("\n  ⚠ CANNOT BE MIGRATED — no transcript on disk:")
+            for n,_,_,note in bad: print(f"      {n}  ({note})")
+        print(f"\n  greenlight when pending = 0.  `lab migrate status` to re-check.")
+    return 0
+
+def cmd_status(a):
+    mid = a.id or current_mid() or die("no open migration")
+    rows = read_all(mid)
+    n_pend = sum(1 for r in rows if r.get("status")=="pending")
+    print(f"=== migration {mid} ===")
+    for r in sorted(rows, key=lambda r:(r.get("status")!="pending", r.get("agent",""))):
+        print(f"  {str(r.get('agent'))[:16]:<16} {r.get('status',''):<10} {r.get('class',''):<18} {r.get('note','')}")
+    print(f"\n  {len(rows)} session(s), {n_pend} pending -> {'GREENLIT' if n_pend==0 else 'DRAINING'}")
+    return 0 if n_pend == 0 else 2
+
+def cmd_close(a):
+    mid = a.id or current_mid() or die("no open migration")
+    agent = a.agent
+    if not agent:
+        r = subprocess.run([os.path.join(BIN,"lab"),"name"], capture_output=True, text=True, timeout=60)
+        agent = (r.stdout or "").strip()
+    if not agent or "could not" in agent:
+        die("cannot resolve who you are — pass --agent <name>")
+    write_status(mid, agent, status="closed", by="self", note=a.note or "registered by the session itself")
+    print(f"migration {mid}: {agent} registered CLOSED")
+    return cmd_status(argparse.Namespace(id=mid))
+
+def cmd_force(a):
+    mid = a.id or current_mid() or die("no open migration")
+    targets = [r for r in read_all(mid) if r.get("status")=="pending"]
+    if a.agent: targets = [r for r in targets if pkey(r.get("agent"))==pkey(a.agent)]
+    if not targets: print("nothing pending to force"); return 0
+    for r in targets:
+        write_status(mid, r["agent"], status="forced", by="force",
+                     note=a.reason or "deadline reached; forced so the loop does not block")
+        print(f"  FORCED {r['agent']} — uncommitted work in that session may be lost")
+    return cmd_status(argparse.Namespace(id=mid))
+
+def main():
+    p = argparse.ArgumentParser(prog="lab migrate")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    s = sub.add_parser("start", help="open a migration and run precheck")
+    s.add_argument("--id"); s.add_argument("--new-job", dest="new_job")
+    s.add_argument("--deadline-hours", dest="deadline_hours", type=int, default=8)
+    s.add_argument("--force-at", dest="force_at", type=int, default=2)
+    s.add_argument("--no-notify", action="store_true"); s.set_defaults(fn=cmd_start)
+    c = sub.add_parser("precheck", help="classify sessions, notify, print the table")
+    c.add_argument("--id"); c.add_argument("--no-notify", dest="notify", action="store_false")
+    c.set_defaults(fn=cmd_precheck)
+    t = sub.add_parser("status"); t.add_argument("--id"); t.set_defaults(fn=cmd_status)
+    k = sub.add_parser("close", help="register THIS session as closed")
+    k.add_argument("--id"); k.add_argument("--agent"); k.add_argument("--note"); k.set_defaults(fn=cmd_close)
+    f = sub.add_parser("force", help="force-close stragglers so the loop cannot block")
+    f.add_argument("--id"); f.add_argument("--agent"); f.add_argument("--reason"); f.set_defaults(fn=cmd_force)
+    a = p.parse_args()
+    sys.exit(a.fn(a) or 0)
+
+if __name__ == "__main__":
+    main()
