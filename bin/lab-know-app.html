@@ -124,7 +124,6 @@ main{flex:1 1 auto;display:flex;min-height:0}
   <button class="tab" role="tab" data-view="tree"     aria-selected="true">Aims tree</button>
   <button class="tab" role="tab" data-view="claims"   aria-selected="false">Claims</button>
   <button class="tab" role="tab" data-view="cards"    aria-selected="false">Cards</button>
-  <button class="tab" role="tab" data-view="branches" aria-selected="false">Branches</button>
 </div>
 
 <main>
@@ -250,7 +249,8 @@ function renderTree(){
   for (const n of nodes) {
     const a = n.a, live = liveOf(a).length, all = (claimsByAim.get(a.id) || []).length;
     const g = mk("g", { class:"node" + (sel && sel.kind === "aim" && sel.id === a.id ? " sel" : ""),
-                        transform:`translate(${n.x},${n.y})`, tabindex:"0", role:"button" });
+                        transform:`translate(${n.x},${n.y})`, tabindex:"0", role:"button",
+                        "data-aim": a.id, "aria-label": `Aim ${a.id}: ${a.title}` });
     g.appendChild(mk("rect", { width:NW, height:NH, rx:8 }));
     g.appendChild(mk("rect", { width:4, height:NH, rx:2, fill:vcolor(a.verdict) }));
     const id = mk("text", { class:"nid", x:13, y:18 }); id.textContent = a.id; g.appendChild(id);
@@ -287,13 +287,29 @@ function zoom(f, cx, cy){ const r = svg.getBoundingClientRect();
   const nw = Math.min(Math.max(vb.w * f, 120), 20000), nh = nw * (vb.h / vb.w);
   vb = { x:px - (px - vb.x) * (nw / vb.w), y:py - (py - vb.y) * (nh / vb.h), w:nw, h:nh }; applyVB(); }
 svg.addEventListener("wheel", e => { e.preventDefault(); zoom(e.deltaY > 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY); }, { passive:false });
-let drag = null;
-svg.addEventListener("pointerdown", e => { drag = { x:e.clientX, y:e.clientY }; svg.classList.add("drag"); svg.setPointerCapture(e.pointerId); });
-svg.addEventListener("pointermove", e => { if (!drag) return; const r = svg.getBoundingClientRect();
+/* Pan, WITHOUT stealing clicks. setPointerCapture() on pointerdown retargets the following `click`
+   to the capture element, so a per-node click handler never fires — nodes became unselectable.
+   Capture only once the pointer has actually travelled (a real pan); a tap stays a tap. */
+let drag = null, panning = false;
+svg.addEventListener("pointerdown", e => { drag = { x:e.clientX, y:e.clientY, id:e.pointerId }; panning = false; });
+svg.addEventListener("pointermove", e => {
+  if (!drag) return;
+  if (!panning) {
+    if (Math.abs(e.clientX - drag.x) + Math.abs(e.clientY - drag.y) < 4) return;   // still a click
+    panning = true; svg.classList.add("drag");
+    try { svg.setPointerCapture(drag.id); } catch (_) {}
+  }
+  const r = svg.getBoundingClientRect();
   vb.x -= (e.clientX - drag.x) / r.width * vb.w; vb.y -= (e.clientY - drag.y) / r.height * vb.h;
-  drag = { x:e.clientX, y:e.clientY }; applyVB(); });
-const endDrag = () => { drag = null; svg.classList.remove("drag"); };
+  drag = { x:e.clientX, y:e.clientY, id:drag.id }; applyVB();
+});
+const endDrag = () => {
+  if (drag && panning) { try { svg.releasePointerCapture(drag.id); } catch (_) {} }
+  drag = null; svg.classList.remove("drag");     // `panning` persists so the trailing click is swallowed
+};
 svg.addEventListener("pointerup", endDrag); svg.addEventListener("pointercancel", endDrag);
+// a genuine pan must not also select whatever was under the cursor; pointerdown resets the flag
+svg.addEventListener("click", e => { if (panning) { e.stopPropagation(); panning = false; } }, true);
 document.getElementById("fit").onclick = fit;
 document.getElementById("zin").onclick = () => zoom(1 / 1.25);
 document.getElementById("zout").onclick = () => zoom(1.25);
@@ -380,22 +396,12 @@ function detailCard(path){
   if (card.error) h += `<div class="warnbox">${esc(card.error)}</div>`;
   return h + `<div class="card-md">${md(card.text)}</div>`;
 }
-function detailBranch(name){
-  const b = DATA.branches.find(x => x.name === name); if (!b) return "";
-  const cs = DATA.claims.filter(c => c.branch === name);
-  let h = `<h2>${esc(b.name)}</h2><div class="kv"><b>status</b> ${esc(b.status || "—")}</div>`;
-  if (b.mechanism) h += `<h3>Mechanism</h3><div class="kv">${esc(b.mechanism)}</div>`;
-  if (b.end_condition) h += `<h3>End condition</h3><div class="kv">${esc(b.end_condition)}</div>`;
-  h += `<h3>Claims (${cs.length})</h3>` + (cs.length ? cs.map(claimLine).join("") : `<div class="note">none</div>`);
-  return h;
-}
 function renderDetail(){
   const d = document.getElementById("detail");
   if (!sel){ d.innerHTML = `<div class="empty">Select a node or claim to see its detail.</div>`; return; }
-  d.innerHTML = sel.kind === "aim"    ? detailAim(aimById.get(sel.id) || {})
-              : sel.kind === "claim"  ? detailClaim(claimById.get(sel.id) || {})
-              : sel.kind === "card"   ? detailCard(sel.id)
-              : sel.kind === "branch" ? detailBranch(sel.id) : "";
+  d.innerHTML = sel.kind === "aim"   ? detailAim(aimById.get(sel.id) || {})
+              : sel.kind === "claim" ? detailClaim(claimById.get(sel.id) || {})
+              : sel.kind === "card"  ? detailCard(sel.id) : "";
   d.scrollTop = 0;
 }
 function select(kind, id){ sel = { kind, id }; renderDetail(); if (view === "tree") renderTree(); else renderList(); }
@@ -451,16 +457,7 @@ function renderList(){
         <span class="stm mono">${esc(c.path)}</span>
         <div class="meta"><span>backs ${c.claims.length} claim(s)</span>${c.error ? `<span>${esc(c.error)}</span>` : ""}</div>
       </div>`).join("") : `<div class="empty">No experiment cards yet. Scaffold one: <span class="mono">lab card new &lt;dir&gt; --claim &lt;id&gt;</span></div>`;
-  } else if (view === "branches"){
-    const bs = DATA.branches.filter(b => !query || (b.name + b.mechanism + b.status).toLowerCase().includes(query.toLowerCase()));
-    L.innerHTML = bs.length ? bs.map(b => {
-      const n = DATA.claims.filter(c => c.branch === b.name).length;
-      return `<div class="row" data-branch="${esc(b.name)}"><span class="st" style="color:var(--mut)">${esc(b.status || "—")}</span>
-        <span class="stm">${esc(b.name)}</span><div class="meta"><span>${n} claim(s)</span>
-        ${b.mechanism ? `<span>${esc(trunc(b.mechanism, 90))}</span>` : ""}</div></div>`;
-    }).join("") : `<div class="empty">No branches match.</div>`;
   }
-  L.querySelectorAll("[data-branch]").forEach(n => n.onclick = () => select("branch", n.getAttribute("data-branch")));
 }
 
 /* ---------- shell ---------- */
