@@ -152,6 +152,10 @@ EXPERIMENT CARDS (the trace behind a claim — setup/implementation/outcome/limi
   retraction never needs one. One card may back several claims; a claim has ≤1 card.
 
 verdict ∈ proposed|active|claimed|likely|falsified|deferred|retired. Dotted id IS the hierarchy.
+An aim id is an IDENTIFIER, not a position: unique + stable, gaps are fine and mean nothing.
+NEVER renumber a node — the id is both primary key and parent link, so renaming it silently
+detaches its claims, history, pending edits, children and every card's `aim:` header. Add the
+node you want and retire the old one instead.
 Verdicts are ASSERTED (never inferred, history kept); tree edits need Zac's approval; logging a result
 NEVER changes a verdict.
 

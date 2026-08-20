@@ -19,6 +19,18 @@ Three layers, one SQLite file (`~/lab/knowledge.db`):
 A hierarchy of aims with dotted ids (`1`, `1.1`, `1.1.3`) — the id *is* the hierarchy. Each node
 carries a verdict: `proposed · active · claimed · likely · falsified · deferred · retired`.
 
+**The id is an identifier, not a position.** It must be unique and stable; it does not need to be
+contiguous, and a gap means nothing — `1.1.1` having children `.2` and `.3` but no `.1` is fine and
+should be left alone. Numbers sort numerically so the tree displays in a readable order, and that is
+all the ordering they carry.
+
+**Never renumber a node.** The id is the primary key *and* the parent link (a node's parent is its id
+with the last segment removed) — so renumbering is a rename that silently detaches everything
+pointing at the old string: its claims, its verdict history, its pending proposals, its children, and
+the `aim:` header of every experiment card. Nothing errors; the evidence just stops being attached.
+If a node is genuinely in the wrong place, add the node you want and retire the old one — that keeps
+both resolvable and leaves an audit trail.
+
 **Verdicts are asserted, never inferred.** Logging a result never moves a verdict on its own, and
 every change is kept in a history with who set it and why. Structural edits go through a queue:
 
