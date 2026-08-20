@@ -481,10 +481,11 @@ document.getElementById("q").addEventListener("input", e => {
   document.getElementById("gen").textContent = "generated " + (DATA.generated || "").replace("T", " ").replace("Z", " UTC");
   const nocard = DATA.claims.filter(c => c.kind === "result" && c.status === "holds" && !c.card && !c.card_waiver).length;
   const broken = DATA.cards.filter(c => !c.exists).length;
+  const plural = (n, w) => `<span><b>${n}</b> ${w}${n === 1 ? "" : "s"}</span>`;
   document.getElementById("counts").innerHTML =
-    `<span><b>${DATA.aims.length}</b> aims</span><span><b>${DATA.claims.length}</b> claims</span>` +
+    plural(DATA.aims.length, "aim") + plural(DATA.claims.length, "claim") +
     `<span><b>${DATA.claims.filter(c => c.status === "holds").length}</b> holds</span>` +
-    `<span><b>${DATA.cards.length}</b> cards</span>` +
+    plural(DATA.cards.length, "card") +
     (nocard ? `<span style="color:var(--warn)"><b>${nocard}</b> need a card</span>` : "") +
     (broken ? `<span style="color:var(--dead)"><b>${broken}</b> broken pointer</span>` : "") +
     (DATA.pending.length ? `<span style="color:var(--warn)"><b>${DATA.pending.length}</b> pending approval</span>` : "");

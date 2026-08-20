@@ -145,6 +145,16 @@ a real graph you can pan and click through, every claim with its evidence and it
 inline, filters for the things that rot quietly (findings attached to no aim, results still missing a
 card, cards pointing at files that have vanished).
 
+<p align="center">
+  <img src="docs/knowledge-map.png" width="900"
+       alt="The knowledge map for an example vaccine programme. Left: the aim tree as a graph, each node coloured by verdict — claimed, likely, active, falsified, proposed — with an evidence count. Right: the selected aim 'Predict responders from pre-treatment tumour mutational burden' is marked FALSIFIED, with the reason, its verdict history, and its two pieces of evidence — an earlier claim struck through as SUPERSEDED, next to the live result that replaced it.">
+</p>
+
+<sub><i>An illustrative example — a personalised neoantigen mRNA vaccine programme for resected
+melanoma. Synthetic data; not a real programme, trial, or organisation. Note aim 1.3.3: the verdict
+is <b>falsified</b>, and its retracted evidence stays struck through beside the result that replaced
+it — the thing a similarity search cannot do for you.</i></sub>
+
 ```
 lab claim find <topic>      have we already concluded this?
 lab aim show <id>           what does the evidence say about this aim?
