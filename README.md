@@ -97,7 +97,7 @@ into a weekly summary or slides.
 💾 &nbsp; **Stop re-downloading data.** &nbsp; Every dataset is registered once — what it is, where it
 lives, what state it's in, how it was checked. One command, before anyone downloads anything, says
 whether you already have it. And a dataset isn't "done" until it records *how* it was verified —
-because *"the job exited without an error"* has burned this project before.
+because *"the job exited without an error"* is not the same as *"the data is intact"*.
 
 🔧 &nbsp; **Stop re-installing and re-deriving tools.** &nbsp; When an agent gets something working it
 registers it — the path, the *exact* invocation, the environment, and the gotchas phrased
@@ -106,9 +106,12 @@ that needs it searches by purpose and gets a command it can run, instead of hunt
 or rebuilding what already exists.
 
 🧠 &nbsp; **Remember what the project concluded — and what it took back.** &nbsp; Every result, null and
-decision is recorded as a *claim*, together with the exact conditions that produced it and whether it
-still stands. Ask *"have we already concluded X?"* and you get the current answer. Withdrawn findings
-never come back as current — they're shown struck through, next to whatever replaced them. There's a
+decision is recorded as a *claim*, with the exact conditions that produced it and whether it still
+stands. Those claims hang off an **aim tree** — the thing your project is actually trying to prove —
+so a finding is evidence *for something*, and you can ask what the evidence says about any goal.
+Verdicts on the tree are yours to assert; an agent can log a result but never promote your aim to
+"proven". Withdrawn findings never come back as current — they're shown struck through, next to
+whatever replaced them. There's a
 [visual map](#-the-knowledge-map--built-for-research-projects-not-document-search) of the whole thing.
 
 🔎 &nbsp; **Get a second opinion.** &nbsp; Optionally plug in a coding assistant from a *different*
@@ -217,7 +220,7 @@ Deliberately unexciting — plain files and a small database, driven by one comm
 server, no account, nothing running in the cloud, no dependencies beyond what ships with Linux or
 macOS. It's designed to survive a shared university cluster: several agents can write at the same
 time without corrupting anything, it never goes hunting across the filesystem (one careless search
-once slowed a shared machine to a crawl for everyone on it), and it stays fast as the records pile
+would slow a shared machine for everyone on it), and it stays fast as the records pile
 up. Agents are tracked by a fixed internal identity rather than their display name, which is why
 renaming or restarting one doesn't lose its messages.
 </details>

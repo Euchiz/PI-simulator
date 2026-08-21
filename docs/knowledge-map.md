@@ -114,4 +114,4 @@ a superseded claim and an experiment card before pointing this at real work.
 - **Deprecate, don't delete.** Superseded entries keep resolving so old links still work; they're
   just ranked last and flagged.
 - **Never walks the filesystem.** Card validation stats known paths and nothing else. On a shared
-  cluster a single careless recursive search once degraded a login node for a day.
+  cluster a broad recursive search can degrade the filesystem for every user on it.
