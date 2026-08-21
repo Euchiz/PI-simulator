@@ -488,7 +488,12 @@ def cmd_depart(a):
                                      deadline_hours=a.deadline_hours, force_at=a.force_at))
         mid = current_mid()
     else:
-        print(f"=== resuming departure {mid} ===")
+        # RE-CLASSIFY on resume. Without this, depart re-reads a frozen snapshot: a session that was
+        # busy when precheck first ran stays "wrapping up" forever even after it goes idle, and the
+        # departure can never green-light. (Observed: wet-lab held pending on a shell that had long
+        # since exited.) precheck preserves anything already self-closed or forced, so this is safe.
+        print(f"=== resuming departure {mid} — re-checking current state ===")
+        cmd_precheck(argparse.Namespace(id=mid, notify=not a.no_notify, quiet=True))
 
     pend = [r for r in read_all(mid) if r.get("status") == "pending"]
     if pend:
