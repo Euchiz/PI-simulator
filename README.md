@@ -17,7 +17,7 @@ produced. You go back to *running* the project instead of relaying for it.
 
 <p align="center">
   <img src="docs/overview.png" width="820"
-       alt="You exchange research with your Claude Code agents and lab affairs with a lab manager. Those sessions message each other directly, can reach an external reviewer that sits outside the group, and all of them read and write one shared workspace holding a board, tasks, standups and a data registry.">
+       alt="You exchange research with your Claude Code agents and lab affairs with a lab manager. Those sessions message each other directly, can reach an external reviewer that sits outside the group, and all of them read and write one shared workspace holding a board, tasks, standups, a data registry, a tool registry and a knowledge map.">
 </p>
 
 ### How you actually use it
