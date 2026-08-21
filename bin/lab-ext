@@ -39,9 +39,14 @@ thread_key(){ printf '%s' "$1" | sed -E 's/^([[:space:]]*[Rr][Ee]:[[:space:]]*)+
 # --- per-agent paths: one definition, shared with the daemon (lab-ext-common.sh) ---
 use_agent() { ext_paths "$1"; }
 threads_get(){ [ -f "$THREADS" ] && awk -F'\t' -v k="$1" '$1==k{print $2; exit}' "$THREADS" || true; }
+lock_host() { [ -f "$LOCK" ] && cut -d' ' -f3 "$LOCK" 2>/dev/null || true; }
+
 running_pid() {
+  # Only meaningful ON THE HOST THAT OWNS THE LOCK. /proc cannot answer for another node's pid, so
+  # a remote check must not be read as "dead" — see agent_status.
   [ -f "$LOCK" ] || return 0
-  local p; p="$(cut -d' ' -f1 "$LOCK" 2>/dev/null || true)"
+  local p h; p="$(cut -d' ' -f1 "$LOCK" 2>/dev/null || true)"; h="$(lock_host)"
+  [ -n "$h" ] && [ "$h" != "$(hostname -s)" ] && return 0
   { [ -n "$p" ] && [ -d "/proc/$p" ]; } || return 0
   tr '\0' ' ' < "/proc/$p/cmdline" 2>/dev/null | grep -q 'lab-bridge' && echo "$p" || true
 }
@@ -177,10 +182,14 @@ agent_stop() {
 }
 
 agent_status() {
-  local p; p="$(running_pid)"
+  local p h me; p="$(running_pid)"; h="$(lock_host)"; me="$(hostname -s)"
   if [ -n "$p" ]; then
     local et; et="$(ps -o etimes= -p "$p" 2>/dev/null | tr -d ' ' || true)"
-    echo "$KEY daemon: LIVE  (pid $p, up ${et:-?}s)"
+    echo "$KEY daemon: LIVE  (pid $p, up ${et:-?}s, on $me)"
+  elif [ -n "$h" ] && [ "$h" != "$me" ]; then
+    # The lock is held by another host. We cannot inspect its /proc, so report honestly rather
+    # than claiming "down" — a compute-node check used to declare a healthy login-node daemon dead.
+    echo "$KEY daemon: registered on $h — NOT VERIFIABLE from $me (its inbox below shows whether it is working)"
   else
     echo "$KEY daemon: down"
   fi

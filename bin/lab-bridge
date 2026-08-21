@@ -90,7 +90,10 @@ if [ -f "$LOCK" ]; then
     echo "lab-bridge: '$KEY' already running (pid $old_pid) — exiting." >&2; exit 0
   fi
 fi
-printf '%s %s\n' "$$" "$KEY-bridge" > "$LOCK"
+# Record the HOST too. The lock lives on NFS and is read from other nodes, where /proc cannot
+# answer for a login-node pid — without the host, "running elsewhere" is indistinguishable from
+# "dead", and `lab ext status` reported a perfectly healthy daemon as down from a compute node.
+printf '%s %s %s\n' "$$" "$KEY-bridge" "$(hostname -s)" > "$LOCK"
 cleanup() { [ -n "${SLEEP_PID:-}" ] && kill "$SLEEP_PID" 2>/dev/null; rm -f "$LOCK" 2>/dev/null || true; }
 trap cleanup EXIT; trap 'cleanup; exit 143' TERM; trap 'cleanup; exit 130' INT
 
