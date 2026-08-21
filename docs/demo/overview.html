@@ -1,0 +1,126 @@
+<!doctype html><html><head><meta charset="utf-8"><style>
+  @font-face{font-family:"NotoEmoji";src:url("NotoColorEmoji.ttf") format("truetype");}
+  :root{
+    --bg:#f5f7f5; --ink:#1f2328; --mut:#6b7280;
+    --green:#1f9d55; --green-soft:#e8f2ec; --green-line:#bcd9c8;
+    --amber:#b07d16; --amber-soft:#fdf6e3; --amber-line:#e0c580;
+    --panel:#12281a; --panel-card:#1b3a26; --panel-line:#2c5439; --panel-accent:#7fd4a0;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{width:1600px;background:var(--bg);
+       font:400 16px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif,"NotoEmoji";
+       color:var(--ink);padding:56px 60px 60px}
+  h1{font-family:-apple-system,sans-serif,"NotoEmoji";font-size:64px;font-weight:800;letter-spacing:-.02em;margin-bottom:10px}
+  h1 .g{color:var(--green)}
+  .tag{font-size:27px;color:var(--mut);margin-bottom:40px}
+
+  .you{width:346px;margin:0 auto;background:#fff;border-radius:22px;padding:26px 0;text-align:center;
+       box-shadow:0 2px 10px rgba(31,35,40,.06)}
+  .you .n{font-family:-apple-system,sans-serif,"NotoEmoji";font-size:36px;font-weight:800}
+  .you .r{font-size:20px;color:var(--mut);margin-top:4px}
+
+  .flows{position:relative;height:118px}
+  .flows .lbl{position:absolute;top:34px;font-size:23px;font-weight:800}
+  .flows .l1{left:330px;color:var(--green)}
+  .flows .l2{right:322px;color:var(--amber)}
+  svg.arrows{position:absolute;inset:0;width:100%;height:118px}
+
+  .sessLbl{font-size:20px;font-weight:700;color:var(--mut);margin-bottom:8px}
+  .band{background:var(--green-soft);border-radius:26px;padding:52px 26px 26px;position:relative}
+  .band .msg{font-family:-apple-system,sans-serif,"NotoEmoji";position:absolute;top:16px;left:50%;transform:translateX(-50%);
+             font-size:23px;font-weight:800;color:#5b7fa8}
+  .row{display:flex;gap:22px;align-items:stretch}
+  .card{flex:1;background:#fff;border:2px solid var(--green-line);border-radius:22px;
+        padding:26px 10px;text-align:center}
+  .card .ic{font-family:-apple-system,sans-serif,"NotoEmoji";font-size:52px;line-height:1}
+  .card .t{font-size:24px;font-weight:800;color:#4b5563;margin-top:12px}
+  .card.mgr{background:var(--amber-soft);border-color:var(--amber-line)}
+  .card.mgr .t{color:var(--amber)}
+  .card .sub{font-size:15px;font-weight:700;color:var(--amber);margin-top:5px}
+  .ext{width:250px;border:2px dashed #c9ced6;border-radius:22px;background:transparent;
+       display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}
+  .ext .ic{font-family:-apple-system,sans-serif,"NotoEmoji";font-size:48px}
+  .ext .t{font-size:22px;font-weight:700;color:var(--mut);margin-top:10px;line-height:1.25}
+
+  .down{height:96px;position:relative}
+  svg.down{position:absolute;inset:0;width:100%;height:96px}
+
+  .ws{background:var(--panel);border-radius:26px;padding:34px 34px 38px;color:#fff}
+  .ws h2{font-size:36px;font-weight:800}
+  .ws h2 .s{color:var(--panel-accent)}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:26px}
+  .wcard{background:var(--panel-card);border:1px solid var(--panel-line);border-radius:18px;
+         padding:24px 12px;text-align:center}
+  .wcard .ic{font-family:-apple-system,sans-serif,"NotoEmoji";font-size:46px;line-height:1}
+  .wcard .t{font-size:25px;font-weight:800;margin-top:12px}
+  .wcard .d{font-size:16px;color:#9fb8a9;margin-top:6px;line-height:1.3}
+</style></head><body>
+
+<h1>🧪 PI <span class="g">simulator</span></h1>
+<div class="tag">Your agents coordinate through a shared workspace — you just run the project.</div>
+
+<div class="you"><div class="n">🧑‍🔬 You</div><div class="r">the PI</div></div>
+
+<div class="flows">
+  <svg class="arrows" viewBox="0 0 1480 118" preserveAspectRatio="none">
+    <defs>
+      <marker id="ag" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto">
+        <path d="M0,0 L9,4.5 L0,9 z" fill="#1f9d55"/></marker>
+      <marker id="aa" markerWidth="9" markerHeight="9" refX="4.5" refY="4.5" orient="auto">
+        <path d="M0,0 L9,4.5 L0,9 z" fill="#b07d16"/></marker>
+    </defs>
+    <line x1="690" y1="6" x2="430" y2="110" stroke="#1f9d55" stroke-width="7" marker-end="url(#ag)"/>
+    <line x1="430" y1="110" x2="690" y2="6" stroke="#1f9d55" stroke-width="7" marker-end="url(#ag)"/>
+    <line x1="790" y1="6" x2="1050" y2="110" stroke="#b07d16" stroke-width="7" marker-end="url(#aa)"/>
+    <line x1="1050" y1="110" x2="790" y2="6" stroke="#b07d16" stroke-width="7" marker-end="url(#aa)"/>
+  </svg>
+  <div class="lbl l1">research</div>
+  <div class="lbl l2">lab affairs</div>
+</div>
+
+<div class="sessLbl">your Claude Code sessions</div>
+<div style="display:flex;gap:22px;align-items:stretch">
+  <div class="band" style="flex:1">
+    <div class="msg">💬 messages</div>
+    <div class="row">
+      <div class="card"><div class="ic">🤖</div><div class="t">agent</div></div>
+      <div class="card"><div class="ic">🤖</div><div class="t">agent</div></div>
+      <div class="card"><div class="ic">🤖</div><div class="t">agent</div></div>
+      <div class="card mgr"><div class="ic">🗂️</div><div class="t">lab manager</div>
+        <div class="sub">standups · health · reports</div></div>
+    </div>
+  </div>
+  <div class="ext"><div class="ic">🔍</div><div class="t">external<br>reviewer</div></div>
+</div>
+
+<div class="down">
+  <svg class="down" viewBox="0 0 1480 96" preserveAspectRatio="none">
+    <defs>
+      <marker id="d1" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#9dbcaa"/></marker>
+      <marker id="d2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+        <path d="M0,0 L8,4 L0,8 z" fill="#c9a44c"/></marker>
+    </defs>
+    <g stroke="#9dbcaa" stroke-width="6">
+      <line x1="150" y1="4" x2="150" y2="88" marker-end="url(#d1)"/><line x1="150" y1="88" x2="150" y2="4" marker-end="url(#d1)"/>
+      <line x1="440" y1="4" x2="440" y2="88" marker-end="url(#d1)"/><line x1="440" y1="88" x2="440" y2="4" marker-end="url(#d1)"/>
+      <line x1="730" y1="4" x2="730" y2="88" marker-end="url(#d1)"/><line x1="730" y1="88" x2="730" y2="4" marker-end="url(#d1)"/>
+    </g>
+    <g stroke="#c9a44c" stroke-width="6">
+      <line x1="1020" y1="4" x2="1020" y2="88" marker-end="url(#d2)"/><line x1="1020" y1="88" x2="1020" y2="4" marker-end="url(#d2)"/>
+    </g>
+  </svg>
+</div>
+
+<div class="ws">
+  <h2>shared workspace <span class="s">— the sessions read &amp; write it</span></h2>
+  <div class="grid">
+    <div class="wcard"><div class="ic">📌</div><div class="t">board</div><div class="d">announcements</div></div>
+    <div class="wcard"><div class="ic">✅</div><div class="t">tasks</div><div class="d">who's doing what</div></div>
+    <div class="wcard"><div class="ic">📅</div><div class="t">standups</div><div class="d">dated records</div></div>
+    <div class="wcard"><div class="ic">💾</div><div class="t">data registry</div><div class="d">don't re-download it</div></div>
+    <div class="wcard"><div class="ic">🔧</div><div class="t">tool registry</div><div class="d">path + exact invocation</div></div>
+    <div class="wcard"><div class="ic">🧭</div><div class="t">knowledge map</div><div class="d">aims, claims &amp; evidence</div></div>
+  </div>
+</div>
+</body></html>
