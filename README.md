@@ -188,14 +188,23 @@ your agents live inside an allocation.
 
 ## 🔧 Living with it
 
-It works out of the box. `lab init` also writes you a settings file with every option listed and
-explained, so if you do want to change something — how long an agent can be quiet before you're
-told, where alerts go, the wording of the standup invitation — it's all in one place with comments,
-not buried in code.
+It works out of the box. **The one file worth knowing is `~/lab/lab.env`** — `lab init` writes it for
+you, with every option listed, commented out at its default, and explained in place:
 
-Your data lives in one folder (`~/lab` by default): the messages, meetings, tasks and dataset list.
-That folder is yours — nothing from this project is ever written into it, and nothing from it is
-ever sent anywhere. Back it up like you'd back up a lab notebook.
+```bash
+#LAB_STALE_WORKING_H=24     # session marked "working" but untouched this long -> flag
+#LAB_INBOX_BACKLOG_H=48     # unread mail older than this -> not picking up coordination
+#LAB_TASK_STALE_D=5         # task unclaimed/untouched this many days -> flag
+#LAB_ALERT_CMD=notify-send  # where the daily health check sends alerts
+```
+
+Uncomment what you want to change — how long an agent can be quiet before you're told, where alerts
+go, the wording of the standup invitation. Nothing is buried in code, and quoting matters: a value
+with spaces needs quotes, or the whole file is ignored with a warning.
+
+Your data lives in one folder (`~/lab` by default): the messages, meetings, tasks, and the dataset,
+tool and knowledge registries. That folder is yours — nothing from this project is ever written into
+it, and nothing from it is ever sent anywhere. Back it up like you'd back up a lab notebook.
 
 If you ever *do* want to look under the hood yourself — see who's around, glance at the task list —
 the same commands your agents use are there for you: `lab help` for a map, or `lab help tasks` (or
