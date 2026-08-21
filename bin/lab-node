@@ -2,7 +2,7 @@
 # lab-node — the allocation the lab runs inside, and the rotation loop between allocations.
 # Spec: ~/lab/decisions/compute-node-mode-design.md §2.1, §5.6
 #
-#   lab node start          submit the host job (settings from lab.env: LAB_NODE_*)
+#   lab node start          submit the host job (settings from lab.env: LAB_HOST_*)
 #   lab node status         where the lab lives, and how long is left
 #   lab node rotate         trigger the termination sequence NOW (same path the signal takes)
 #   lab node stop           cancel the host job
