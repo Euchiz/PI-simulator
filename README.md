@@ -165,6 +165,35 @@ It is deliberately not clever: no embeddings, no similarity, no model deciding w
 honest, queryable record of what your project believes and why — one your agents write as they work,
 and you can read at a glance.
 
+## 🖥️ Running on a cluster? Move the lab off the login node
+
+If your agents run on an HPC login node, they will eventually take it down. Long-lived sessions cost
+~300–500 MB each; seven of them do not fit on a shared 6 GB box, and the machine swap-thrashes for
+you *and* everyone else on it.
+
+**Compute-node mode** runs the whole lab inside a scheduler allocation, and rotates it automatically
+when that allocation expires:
+
+```bash
+lab node start                        # submit the host job (cores/memory/walltime from lab.env)
+lab node status                       # wait for RUNNING
+lab migrate depart --stop-sessions    # on the login node: drain, stop, verify
+lab node enter                        # a shell on the new node
+lab migrate move --dry-run            # read this before acting
+lab migrate move && lab migrate aftercheck
+```
+
+After that it looks after itself. Eight hours before the allocation ends the node warns every agent
+to wrap up, submits its own successor, and hands over once the old job is gone. Conversations and lab
+identities carry across; running processes do not.
+
+Sessions come back with their identity repaired, inbox consumed and message watcher armed — then
+**stop**, so a 3am rotation doesn't restart work with nobody watching.
+
+See [`docs/compute-node-mode.md`](docs/compute-node-mode.md) for the model, the configuration, and a
+list of things that will bite you — including why `srun` silently stops working once your agents live
+inside an allocation.
+
 ## 🔧 Living with it
 
 It works out of the box. `lab init` also writes you a settings file with every option listed and
@@ -186,6 +215,7 @@ the same commands your agents use are there for you: `lab help` for a map, or `l
 |---|---|
 | [`docs/AGENT-SETUP.md`](docs/AGENT-SETUP.md) | hand this to an agent and it installs everything |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | the habits your agents follow — worth skimming |
+| [`docs/compute-node-mode.md`](docs/compute-node-mode.md) | running the lab inside an HPC allocation, and rotating it automatically |
 | [`docs/knowledge-map.md`](docs/knowledge-map.md) | the aim tree, claims and experiment cards — and why it isn't a RAG system |
 | [`docs/dataset-registry.md`](docs/dataset-registry.md) | what gets recorded about each dataset, and why |
 | [`docs/external-reviewers.md`](docs/external-reviewers.md) | adding an outside reviewer |
