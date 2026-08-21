@@ -67,15 +67,30 @@ def activity(short_id):
     if "local_bash" in kinds and out["shells"] == 0: out["shells"] = 1
     return out
 
+# Claude Code's own per-session state is the ONLY reliable liveness signal here.
+#   'working' = actively running · 'done' = idle but the process is alive and holding memory
+#   'stopped' = ended by `claude stop` · 'failed' = process gone
+RUNNING_STATES = ("working", "done")
+ENDED_STATES   = ("stopped", "failed")
+
+def session_states():
+    """short-id -> state, from `claude agents` (NFS-backed, so it answers across nodes)."""
+    return {s.get("id"): s.get("state") for s in sessions()}
+
 def local_pids():
     """short-session-id -> pid|0, for sessions alive on THIS host. A bounded /proc read (never an
     NFS scan). Only the old node can do this, which is why verification happens THERE.
 
-    TWO signals, unioned deliberately. Neither is complete on its own: the environ scan misses a
-    session whose main process is a CLAIMED SPARE (its own environ has no CLAUDE_JOB_DIR), and the
-    pty-socket scan misses sessions that are not pty-hosted here. Measured on this node: environ
-    found 5, sockets found 2. We bias toward "still alive" — a false ALIVE only delays a migration,
-    while a false GONE lets two sessions hold one lab identity and eat each other's inbox.
+    DO NOT USE THIS FOR LIVENESS. Kept only for diagnostics. Measured 2026-08-21, it is wrong in
+    BOTH directions on this system:
+      - FALSE POSITIVE: any process that merely INHERITED the session's environment is attributed to
+        it. The codex/agy `lab-bridge` daemons, started from a session, are setsid and outlive it —
+        so verify-dead reported "Technician STILL RUNNING pid 205372" forever, where that pid was
+        the codex daemon.
+      - FALSE NEGATIVE: a session's own process does not carry CLAUDE_JOB_DIR at all, and its socket
+        is named for a spare claim (e.g. 62740997) that does not match the session id — so the real
+        session is invisible.
+    Use session_states() instead: Claude Code maintains it, and it is NFS-backed.
     """
     out = {}
     for pid in os.listdir("/proc"):
@@ -301,10 +316,12 @@ def old_is_dead(rec, man):
     a real agent's lab identity. Only positive evidence counts: Slurm says the job is gone, or the
     old host itself stamped the session.
     """
-    # 1. a live local process is decisive: it is NOT dead
-    here = local_pids().get(rec.get("short_id"))
-    if here is not None:
-        return False, f"still running on this host ({'pid '+str(here) if here else 'pty socket present'})"
+    # 1. Claude Code's own state is decisive and works across nodes
+    st = session_states().get(rec.get("short_id"))
+    if st in RUNNING_STATES:
+        return False, f"session state is '{st}' — still alive (stop it first)"
+    if st in ENDED_STATES:
+        return True, f"session state is '{st}' — process has ended"
     # 2. Slurm is authoritative for a job-hosted old node
     job = man.get("old_job")
     if job:
@@ -449,19 +466,18 @@ def cmd_aftercheck(a):
 def cmd_verify_dead(a):
     """Run ON THE OLD NODE. Stamps each session with whether its process is actually gone."""
     mid = a.id or current_mid() or die("no open migration")
-    pids, host = local_pids(), os.uname().nodename
+    states, host = session_states(), os.uname().nodename
     n_gone = n_live = 0
     for r in read_all(mid):
         sid = r.get("short_id")
         if not sid: continue
-        pid = pids.get(sid)
-        alive = pid is not None
-        write_status(mid, r["agent"], process_gone=(not alive), old_pid=pid,
+        st = states.get(sid)
+        alive = st in RUNNING_STATES
+        write_status(mid, r["agent"], process_gone=(not alive), session_state=st,
                      verified_on=host, verified_at=now())
         if alive:
             n_live += 1
-            where = f"pid {pid}" if pid else "pty socket present"
-            print(f"  STILL RUNNING  {r['agent']:<16} {where}   (`claude stop {sid}` to end it)")
+            print(f"  STILL RUNNING  {r['agent']:<16} state='{st}'   (`claude stop {sid}` to end it)")
         else:
             n_gone += 1
     print(f"\n  verified on {host}: {n_gone} gone, {n_live} still running")
@@ -504,8 +520,8 @@ def cmd_depart(a):
         return 2
 
     movable = [r for r in read_all(mid) if r.get("status") in ("closed","forced") and r.get("transcript")]
-    pids = local_pids()
-    live = [r for r in movable if pids.get(r.get("short_id"))]
+    states = session_states()
+    live = [r for r in movable if states.get(r.get("short_id")) in RUNNING_STATES]
     if live:
         if not a.stop_sessions:
             print(f"\n  {len(live)} session(s) are drained but their processes are STILL RUNNING here.")
