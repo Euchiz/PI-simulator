@@ -437,10 +437,7 @@ def cmd_move(a):
 def cmd_aftercheck(a):
     mid = a.id or current_mid() or die("no open migration")
     recs = read_all(mid)
-    live = {}
-    for s in sessions():
-        if s.get("state") in ("working","done"):
-            live.setdefault(pkey(s.get("name") or ""), []).append(s.get("id"))
+    live = live_session_ids()          # currently WORKING sessions only
     moved  = [r for r in recs if r.get("moved_to")]
     forced = [r for r in recs if r.get("status") == "forced"]
     bad    = [r for r in recs if r.get("class") == "unmigratable"]
@@ -448,8 +445,7 @@ def cmd_aftercheck(a):
     print(f"=== migration {mid} — aftercheck ===")
     print(f"  moved: {len(moved)}   forced: {len(forced)}   unmigratable: {len(bad)}   errors: {len(errs)}")
     for r in moved:
-        seen = r["moved_to"] in sum(live.values(), [])
-        print(f"    {r['agent']:<16} -> {r['moved_to']}  {'visible' if seen else 'NOT VISIBLE in claude agents'}")
+        print(f"    {r['agent']:<16} {r.get('short_id','?')} -> {r['moved_to']}")
     if forced:
         print("\n  ⚠ FORCED — these did not wrap up; uncommitted work may have been lost:")
         for r in forced: print(f"      {r['agent']}")
@@ -459,12 +455,18 @@ def cmd_aftercheck(a):
     if errs:
         print("\n  ⚠ ERRORS:")
         for r in errs: print(f"      {r['agent']}: {r['move_error']}")
-    dupes = {n:v for n,v in live.items() if len(v) > 1 and n}
+    # Use the registry's OWN old->new mapping, not name-matching across `claude agents --all`.
+    # --all ALWAYS lists the pre-migration sessions (a stopped session persists there reporting
+    # state 'done', identical to an idle live one), so name-matching flagged all 7 as duplicated
+    # when none were. Only an OLD id that is still actively WORKING is a real conflict.
+    dupes = [r for r in moved if r.get("short_id") in live]
     if dupes:
-        print("\n  ⚠⚠ SAME LAB NAME LIVE TWICE — they will consume each other's inbox. Close the old one:")
-        for n,v in dupes.items(): print(f"      {n}: {v}")
+        print("\n  ⚠⚠ SAME LAB NAME LIVE TWICE — the pre-migration session is still running and will")
+        print("     consume this one's inbox. Close it:")
+        for r in dupes: print(f"      claude stop {r['short_id']}      # old {r['agent']}")
     else:
-        print("\n  ✓ no lab name is live twice")
+        print("\n  ✓ no pre-migration session is still running (old ids stay listed under")
+        print("    `claude agents --all`, which includes stopped sessions — that is expected)")
     if not errs and not dupes and a.finalise:
         m = manifest(mid); m["finalised"] = now()
         json.dump(m, open(os.path.join(mig_dir(mid),"manifest.json"),"w"), indent=2)
