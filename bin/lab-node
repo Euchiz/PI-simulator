@@ -4,6 +4,7 @@
 #
 #   lab node start          submit the host job (settings from lab.env: LAB_HOST_*)
 #   lab node status         where the lab lives, and how long is left
+#   lab node enter          open a shell ON the host node (ssh to compute nodes is refused)
 #   lab node rotate         trigger the termination sequence NOW (same path the signal takes)
 #   lab node stop           cancel the host job
 #
@@ -19,8 +20,26 @@ PART="${LAB_HOST_PARTITION:-defq}"; CPUS="${LAB_HOST_CPUS:-8}"
 MEM="${LAB_HOST_MEM:-16G}";        TIME="${LAB_HOST_TIME:-45-00:00:00}"
 WARN_H="${LAB_HOST_WARN_HOURS:-8}"; FORCE_H="${LAB_HOST_FORCE_AT_HOURS:-2}"
 
+# walltime "D-HH:MM:SS" | "HH:MM:SS" | "MM:SS" -> seconds
+_walltime_s() {
+  local t="$1" d=0
+  case "$t" in *-*) d="${t%%-*}"; t="${t#*-}";; esac
+  local IFS=:; set -- $t
+  case $# in 3) echo $(( d*86400 + $1*3600 + $2*60 + $3 ));;
+             2) echo $(( d*86400 + $1*60 + $2 ));;
+             *) echo $(( d*86400 + ${1:-0} ));; esac
+}
+
 submit() {   # -> job id on stdout. $1 = optional "successor" marker
   local warn_s="${LAB_HOST_WARN_SECONDS:-$(( WARN_H * 3600 ))}"   # seconds override: testing + short rotations
+  # GUARD: if the lead is >= the walltime, Slurm fires the signal immediately and the node rotates
+  # the moment it starts. Observed with a 6-minute test walltime against the default 8h lead: the
+  # job submitted its successor at once. Clamp to half the walltime and say so.
+  local wall_s; wall_s=$(_walltime_s "$TIME")
+  if [ "$wall_s" -gt 0 ] && [ "$warn_s" -ge "$wall_s" ]; then
+    warn_s=$(( wall_s / 2 ))
+    echo "lab node: warning lead exceeds the walltime — clamped to ${warn_s}s (half of $TIME)" >&2
+  fi
   sbatch --parsable --partition="$PART" -c "$CPUS" --mem "$MEM" -t "$TIME" \
          --job-name=lab-node --signal="B:USR1@${warn_s}" \
          -o "$LAB_HOME/node-%j.log" \
@@ -36,6 +55,15 @@ cmd_start() {
   fi
   local j; j=$(submit)
   [ -n "$j" ] || die "sbatch failed"
+  # Record the job id IMMEDIATELY. _register only runs once the job starts, so without this there
+  # is a blind window while it is PENDING where `lab node status`/`enter` report "no host job".
+  python3 - "$HOSTF" "$j" <<'PY'
+import json,sys,datetime
+p,job=sys.argv[1:3]
+json.dump({"job":job,"node":None,"end":None,"state":"submitted",
+           "started":datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+          open(p,"w"),indent=2)
+PY
   echo "lab node: submitted host job $j  ($PART, ${CPUS}c/${MEM}, walltime $TIME)"
   if [ -n "${LAB_HOST_WARN_SECONDS:-}" ]; then
     echo "  warning fires at T-${LAB_HOST_WARN_SECONDS}s · stragglers forced ${LAB_HOST_FORCE_GAP_SECONDS:-?}s later"
@@ -53,7 +81,7 @@ h=json.load(open(sys.argv[1])); j=h.get("job","")
 r=subprocess.run(["squeue","-h","-j",str(j),"-o","%T|%N|%L"],capture_output=True,text=True)
 line=(r.stdout or "").strip()
 print(f"  host job : {j}")
-print(f"  node     : {h.get('node','?')}   started {h.get('started','?')}")
+print(f"  node     : {h.get('node') or '(not started yet)'}   submitted {h.get('started','?')}")
 if line:
     st,node,left=(line.split("|")+["","",""])[:3]
     print(f"  state    : {st} on {node}")
@@ -62,6 +90,19 @@ else:
     print("  state    : NOT RUNNING (finished or cancelled) — the lab is not on this node any more")
 print(f"  end time : {h.get('end','?')}")
 PY
+}
+
+cmd_enter() {   # open a shell ON the host node
+  [ -f "$HOSTF" ] || die "no host job recorded — run \`lab node start\` first"
+  local j; j=$(python3 -c "import json;print(json.load(open('$HOSTF')).get('job',''))" 2>/dev/null)
+  [ -n "$j" ] || die "host.json has no job id"
+  local st; st=$(squeue -h -j "$j" -o %T 2>/dev/null)
+  if [ "$st" = "PENDING" ]; then die "host job $j is still queued — wait for RUNNING (\`lab node status\`)"; fi
+  [ "$st" = "RUNNING" ] || die "host job $j is ${st:-gone}, not RUNNING — \`lab node status\`"
+  echo "lab node: entering host job $j on $(squeue -h -j "$j" -o %N 2>/dev/null)  (exit returns you here)"
+  # --overlap shares the existing allocation instead of asking for new resources; direct ssh to
+  # compute nodes is refused on this cluster, so Slurm is the only door in.
+  exec srun --jobid="$j" --overlap --pty bash -l
 }
 
 cmd_stop() {
@@ -150,10 +191,11 @@ _run() {
 
 case "${1:-}" in
   start)  cmd_start;;
+  enter|attach) cmd_enter;;
   status) cmd_status;;
   stop)   cmd_stop;;
   rotate) _warn;;
   _run)   _run;;
   _register) _register;;
-  *) echo "usage: lab node start|status|rotate|stop"; exit 1;;
+  *) echo "usage: lab node start|status|enter|rotate|stop"; exit 1;;
 esac

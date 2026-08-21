@@ -186,8 +186,20 @@ def cmd_precheck(a):
     roster = lab_agents()
     try: hours = json.load(open(os.path.join(mig_dir(mid),"manifest.json"))).get("deadline_hours",8)
     except Exception: hours = 8
+    # GUARD: precheck MUST run on the host where the sessions live. watcher_alive() uses
+    # os.kill(pid,0), which only answers for local pids — run it elsewhere and every session
+    # silently classifies as "not reachable", so NOBODY gets a wrap-up message and everyone is
+    # force-closed without warning. Observed once, when a stray test job ran precheck from a
+    # compute node while the sessions were on the login node.
+    _local = local_pids()
+    _sess  = sessions()
+    if _sess and not any(x.get("id") in _local for x in _sess):
+        print(f"  ⚠ WARNING: none of the {len(_sess)} sessions are running on this host "
+              f"({os.uname().nodename}).\n"
+              f"    precheck can only reach sessions it shares a machine with — run it ON THE OLD "
+              f"NODE, or every session will be classified unreachable and force-closed unwarned.")
     rows, notified = [], 0
-    for s in sessions():
+    for s in _sess:
         name = s.get("name") or s.get("id")
         cls, st, note, act = classify(s, roster)
         prev = None
