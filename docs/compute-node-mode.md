@@ -95,6 +95,24 @@ submission.
 | **Stays on a login node** | external reviewers, because they run where their binaries are installed. Their keepalive is the one thing left on `cron` |
 | **Does not survive** | running processes and shells. Batch jobs you submitted are independent and outlive the node — record their ids |
 
+## Where a session is born decides whether it survives
+
+The agent daemon parents every background session, and inside a scheduler the daemon's **job step**
+sets their lifetime. Open a shell with `lab node enter` and start sessions from it, and the daemon is
+born inside that shell's step — so the moment you exit the shell, the scheduler tears that step down
+and kills every session in it, typically within a minute or two.
+
+Nothing in the session can defend itself. Step membership is fixed when a process starts, so `nohup`
+and `setsid` change nothing, and the long-lived `extern` step is owned by root, so a running process
+cannot be moved somewhere safer after the fact.
+
+The host job therefore starts the daemon itself, in the batch step, which lasts as long as the
+allocation. Sessions it parents survive interactive shells coming and going, and `lab node enter`
+warns you if it finds a daemon that was started the other way instead.
+
+If you do need to hold a shell open, run `lab node enter` inside `tmux` or `screen` on the login node
+and **detach** rather than exiting. The step stays alive because the client does.
+
 ## Two rules that change once you are inside an allocation
 
 **Use `sbatch`, never `srun`, for compute.** Inside an allocation `srun` nests into the enclosing job

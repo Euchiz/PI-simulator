@@ -117,6 +117,14 @@ cmd_enter() {   # open a shell ON the host node
   if [ "$st" = "PENDING" ]; then die "host job $j is still queued — wait for RUNNING (\`lab node status\`)"; fi
   [ "$st" = "RUNNING" ] || die "host job $j is ${st:-gone}, not RUNNING — \`lab node status\`"
   echo "lab node: entering host job $j on $(squeue -h -j "$j" -o %N 2>/dev/null)  (exit returns you here)"
+  # A daemon reported as "transient" was started by an interactive step and dies with it, taking
+  # every session it parents. Say so on the way in — after the shell exits it is too late.
+  if command -v claude >/dev/null 2>&1 &&
+     timeout 20 claude daemon status 2>/dev/null | grep -q "origin:.*transient"; then
+    echo "lab node: WARNING — the agent daemon is transient (owned by an interactive step)."
+    echo "          Sessions started here will be killed when you exit this shell."
+    echo "          A daemon started by the host job survives; see docs/compute-node-mode.md."
+  fi
   # --overlap shares the existing allocation instead of asking for new resources; direct ssh to
   # compute nodes is refused on this cluster, so Slurm is the only door in.
   exec srun --jobid="$j" --overlap --pty bash -l
@@ -239,6 +247,24 @@ _schedule_tick() {
   find "$LAB_HOME/.host-cron" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
 }
 
+# The agent daemon parents every background session, so WHERE it is born decides whether sessions
+# outlive a shell. Started on demand by `claude agents`, it lands in whatever `srun --pty` step
+# opened the agents view — and Slurm SIGKILLs a step's entire cgroup the moment that shell exits,
+# taking every session with it. Nothing in the session can defend itself: cgroup membership is fixed
+# at fork, so `nohup`/`setsid` do not help, and the long-lived `extern` step's cgroup.procs is
+# root-owned, so a running process cannot be moved to safety after the fact. Starting the daemon
+# HERE — from the batch script — puts it in step_batch, which lasts as long as the allocation, and
+# every session it goes on to parent inherits that. Interactive shells then come and go freely.
+_ensure_agent_daemon() {
+  # `local PATH` shadows without growing it on every loop pass; it stays exported to children.
+  local PATH="$HOME/.local/bin:${LAB_NODE_BIN:+$LAB_NODE_BIN:}$PATH"
+  command -v claude >/dev/null 2>&1 || return 0
+  claude daemon status >/dev/null 2>&1 && return 0
+  mkdir -p "$LAB_HOME/logs"
+  echo "[lab-node] agent daemon is down — starting it in the batch step"
+  setsid claude daemon run >>"$LAB_HOME/logs/agent-daemon.log" 2>&1 &
+}
+
 _run() {
   # EXEC matters: --wrap runs the command as a CHILD of /bin/sh, and `--signal=B:USR1` targets that
   # shell. Without `exec` the signal hits a shell with no trap and the DEFAULT action for SIGUSR1
@@ -247,6 +273,7 @@ _run() {
   trap '_warn' USR1
   _register
   _bootstrap
+  _ensure_agent_daemon
   echo "[lab-node] holding the allocation. Attach with: srun --jobid=${SLURM_JOB_ID:-?} --overlap --pty bash"
   # Monitoring follows the lab. memwatch/scanwatch read /proc/meminfo and local /proc — from the
   # login node they would watch an idle machine and report all-clear while the real lab is here.
@@ -257,6 +284,7 @@ _run() {
     i=$(( i + 1 ))
     if [ $(( i % 3 )) = 0 ]; then "$SELF/lab-memwatch"  >/dev/null 2>&1 || true; fi
     if [ $(( i % 2 )) = 0 ]; then "$SELF/lab-scanwatch" >/dev/null 2>&1 || true; fi
+    if [ $(( i % 2 )) = 0 ]; then _ensure_agent_daemon; fi
     if [ $(( i % 5 )) = 0 ]; then _schedule_tick; fi
   done
 }
