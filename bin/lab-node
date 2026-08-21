@@ -129,6 +129,18 @@ _warn() {   # the pre-termination signal handler
   echo "[lab-node] $(date +%T) SIGUSR1 — $lead left. Submitting successor + opening migration."
   local new; new=$(submit successor)
   echo "[lab-node] successor job: ${new:-FAILED}"
+  if [ -n "$new" ]; then
+    # A successor stuck in PENDING when this node dies means NOBODY pulls: transcripts are safe but
+    # the lab is stranded until someone runs `move` by hand. Say so loudly and early.
+    ( local w=0
+      while [ $w -lt $(( WARN_H * 3600 / 2 )) ]; do
+        local st; st=$(squeue -h -j "$new" -o %T 2>/dev/null)
+        [ "$st" = "RUNNING" ] && { echo "[lab-node] successor $new is RUNNING — handoff is safe"; exit 0; }
+        [ -z "$st" ] && { echo "[lab-node] ⚠ successor $new VANISHED from the queue — no node will pull. Run \`lab node start\` yourself."; exit 1; }
+        sleep 120; w=$(( w + 120 ))
+      done
+      echo "[lab-node] ⚠ successor $new is STILL PENDING with half the warning window gone — the lab may be stranded. Check \`squeue\`." ) &
+  fi
   "$SELF/lab" migrate start --new-job "${new:-}" \
       --deadline-hours "$WARN_H" --force-at "$FORCE_H" || true
   ( _force_at_deadline & )     # background: force stragglers so the loop cannot block
@@ -186,7 +198,16 @@ _run() {
   _register
   _bootstrap
   echo "[lab-node] holding the allocation. Attach with: srun --jobid=${SLURM_JOB_ID:-?} --overlap --pty bash"
-  while true; do sleep 60 & wait $!; done      # `wait` so the USR1 trap fires promptly
+  # Monitoring follows the lab. memwatch/scanwatch read /proc/meminfo and local /proc — from the
+  # login node they would watch an idle machine and report all-clear while the real lab is here.
+  # cron cannot help: compute nodes have no crond, so the host job runs them itself.
+  local i=0
+  while true; do
+    sleep 60 & wait $!
+    i=$(( i + 1 ))
+    if [ $(( i % 3 )) = 0 ]; then "$SELF/lab-memwatch"  >/dev/null 2>&1 || true; fi
+    if [ $(( i % 2 )) = 0 ]; then "$SELF/lab-scanwatch" >/dev/null 2>&1 || true; fi
+  done
 }
 
 case "${1:-}" in

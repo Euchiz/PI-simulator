@@ -343,6 +343,23 @@ def cmd_move(a):
     if pend and not a.force:
         die(f"{len(pend)} session(s) still pending — not greenlit. "
             f"`lab migrate status`, then `lab migrate force` or `move --force`")
+    # HARD GUARD: move must run INSIDE the host job it is migrating into. Without this, a stray
+    # `move` runs wherever you happen to be — which on 2026-08-21 meant a login node with ~700 MB
+    # free, where it resumed 7 sessions and OOM'd the machine for an hour. Resuming sessions is
+    # memory-heavy by nature; it must only ever happen on the allocation sized for it.
+    here_job = os.environ.get("SLURM_JOB_ID", "")
+    want_job = str(man.get("new_job") or "")
+    if not a.dry_run and not a.force_here:
+        if want_job and here_job != want_job:
+            die(f"refusing to move: this migration targets host job {want_job}, but you are "
+                f"{'on job '+here_job if here_job else 'NOT inside any Slurm job (a login node?)'}.\n"
+                f"  Run it on the host node:  lab node enter   then re-run.\n"
+                f"  Resuming sessions is memory-heavy — on a login node it takes the machine down.\n"
+                f"  Override only if you are certain: --force-here")
+        if not want_job and not here_job:
+            die("refusing to move: not inside a Slurm job and the manifest names no host job.\n"
+                "  `move` resumes sessions, which is memory-heavy — never do it on a login node.\n"
+                "  Use `lab node enter` first, or --force-here if you truly mean it.")
     movable = [r for r in recs if r.get("status") in ("closed","forced")
                and r.get("transcript") and not r.get("moved_to")]
     skipped = [r for r in recs if r.get("moved_to")]
@@ -527,6 +544,8 @@ def main():
     mv.add_argument("--id"); mv.add_argument("--force", action="store_true", help="move even if some are pending")
     mv.add_argument("--allow-live-old", dest="allow_live_old", action="store_true",
                     help="proceed when the old host's liveness cannot be verified from here")
+    mv.add_argument("--force-here", dest="force_here", action="store_true",
+                    help="move even though this is not the targeted host job (dangerous on a login node)")
     mv.add_argument("--dry-run", dest="dry_run", action="store_true",
                     help="show what WOULD move and why, resuming nothing")
     mv.add_argument("--no-setup", dest="no_setup", action="store_true",
