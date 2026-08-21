@@ -73,9 +73,20 @@ def activity(short_id):
 RUNNING_STATES = ("working", "done")
 ENDED_STATES   = ("stopped", "failed")
 
-def session_states():
-    """short-id -> state, from `claude agents` (NFS-backed, so it answers across nodes)."""
-    return {s.get("id"): s.get("state") for s in sessions()}
+def live_session_ids():
+    """ids of sessions that are ACTUALLY ALIVE.
+
+    `claude agents --json --all` "also include[s] completed background sessions", and a stopped
+    session KEEPS ITS LAST STATE — a session stopped seconds ago still reports state='done',
+    identical to an idle-but-running one. So `state` cannot distinguish them and must not be used
+    for liveness. PRESENCE IN THE PLAIN LISTING is the signal: --all lists 8, plain lists only the
+    1 that is really running.
+    """
+    try:
+        out = subprocess.run(["claude","agents","--json"], capture_output=True, text=True, timeout=120)
+        return {x.get("id") for x in json.loads(out.stdout or "[]")}
+    except Exception:
+        return set()
 
 def local_pids():
     """short-session-id -> pid|0, for sessions alive on THIS host. A bounded /proc read (never an
@@ -316,12 +327,11 @@ def old_is_dead(rec, man):
     a real agent's lab identity. Only positive evidence counts: Slurm says the job is gone, or the
     old host itself stamped the session.
     """
-    # 1. Claude Code's own state is decisive and works across nodes
-    st = session_states().get(rec.get("short_id"))
-    if st in RUNNING_STATES:
-        return False, f"session state is '{st}' — still alive (stop it first)"
-    if st in ENDED_STATES:
-        return True, f"session state is '{st}' — process has ended"
+    # 1. Claude Code's own live-session listing is decisive and works across nodes
+    sid = rec.get("short_id")
+    if sid in live_session_ids():
+        return False, "still listed as a LIVE session (stop it first)"
+    return True, "no longer listed as a live session — it has been stopped"
     # 2. Slurm is authoritative for a job-hosted old node
     job = man.get("old_job")
     if job:
@@ -466,18 +476,17 @@ def cmd_aftercheck(a):
 def cmd_verify_dead(a):
     """Run ON THE OLD NODE. Stamps each session with whether its process is actually gone."""
     mid = a.id or current_mid() or die("no open migration")
-    states, host = session_states(), os.uname().nodename
+    live, host = live_session_ids(), os.uname().nodename
     n_gone = n_live = 0
     for r in read_all(mid):
         sid = r.get("short_id")
         if not sid: continue
-        st = states.get(sid)
-        alive = st in RUNNING_STATES
-        write_status(mid, r["agent"], process_gone=(not alive), session_state=st,
+        alive = sid in live
+        write_status(mid, r["agent"], process_gone=(not alive),
                      verified_on=host, verified_at=now())
         if alive:
             n_live += 1
-            print(f"  STILL RUNNING  {r['agent']:<16} state='{st}'   (`claude stop {sid}` to end it)")
+            print(f"  STILL RUNNING  {r['agent']:<16} (`claude stop {sid}` to end it)")
         else:
             n_gone += 1
     print(f"\n  verified on {host}: {n_gone} gone, {n_live} still running")
@@ -520,8 +529,8 @@ def cmd_depart(a):
         return 2
 
     movable = [r for r in read_all(mid) if r.get("status") in ("closed","forced") and r.get("transcript")]
-    states = session_states()
-    live = [r for r in movable if states.get(r.get("short_id")) in RUNNING_STATES]
+    alive_ids = live_session_ids()
+    live = [r for r in movable if r.get("short_id") in alive_ids]
     if live:
         if not a.stop_sessions:
             print(f"\n  {len(live)} session(s) are drained but their processes are STILL RUNNING here.")
