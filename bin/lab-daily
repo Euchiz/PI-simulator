@@ -29,7 +29,19 @@ node_facts() {
   echo "## Node / compute  ($(hostname 2>/dev/null))"
   local l1 l5 l15 rest
   read -r l1 l5 l15 rest < /proc/loadavg 2>/dev/null || true
-  echo "  load 1/5/15: ${l1:-?} ${l5:-?} ${l15:-?}   cores: $(nproc 2>/dev/null || echo '?')"
+  # /proc/loadavg is NODE-WIDE (all tenants); `nproc` inside a Slurm cgroup reports only OUR
+  # allocated cores. On a login node they coincide; under an allocation they differ ~10x, so the
+  # judge saw "load 39 on 8 cores" and escalated a node that was 50% idle across its 80 cores.
+  local phys mine pct
+  phys="$(nproc --all 2>/dev/null || echo '?')"
+  mine="$(nproc 2>/dev/null || echo '?')"
+  if [ -n "${SLURM_JOB_ID:-}" ]; then
+    pct="?"; [ "$phys" != "?" ] && pct="$(awk -v l="${l1:-0}" -v c="$phys" 'BEGIN{printf "%.0f", l/c*100}')"
+    echo "  load 1/5/15: ${l1:-?} ${l5:-?} ${l15:-?}   node has $phys cores (${pct}% utilised, SHARED with other users)"
+    echo "  our slice:   $mine cores / ${SLURM_MEM_PER_NODE:-?} MB in Slurm job ${SLURM_JOB_ID} - cgroup-enforced, so other tenants' load is NOT our problem"
+  else
+    echo "  load 1/5/15: ${l1:-?} ${l5:-?} ${l15:-?}   cores: $phys"
+  fi
   free -h 2>/dev/null | awk '/^Mem:/{print "  mem: "$3" used / "$2" total"}'
   local fs
   for fs in $LAB_NODE_FS; do
