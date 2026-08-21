@@ -183,8 +183,8 @@ Sessions come back with their identity repaired, inbox consumed and message watc
 **stop**, so a 3am rotation doesn't restart work with nobody watching.
 
 See [`docs/compute-node-mode.md`](docs/compute-node-mode.md) for the model, the configuration, and
-what moves versus what stays behind — including why you should use `sbatch` rather than `srun` once
-your agents live inside an allocation.
+what moves versus what stays behind — including why batch submission (`sbatch`) replaces interactive
+job steps (`srun`) once your agents live inside an allocation.
 
 ## 🔧 Living with it
 

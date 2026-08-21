@@ -22,7 +22,7 @@ anything tomorrow.
 ## Design decisions
 1. **General, not nanopore-specific.** No hardcoded chemistry column; chemistry lives in free-text tags.
 2. **Status = a free-text line the agent writes** so others can just read and understand it — no rigid
-   enum. Plus **`updated_by`** = the responsible agent/person to reach out to on confusion.
+   enum. Plus the **`updated_by`** column = the responsible agent/person to reach out to on confusion.
 3. **Keywords = free-text tags** (`illumina`, `nanopore`, `in-vivo`, `timecourse`, `ground-truth`, …),
    **queryable across rows** (FTS handles this).
 4. **Duplicate `id` → BLOCK** with a clear error: *"id 'X' already exists — consider

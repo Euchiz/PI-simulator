@@ -48,7 +48,7 @@ from the harness, so without it the tool can't tell sessions apart. Stop and exp
 ```bash
 ./install.sh              # symlinks bin/ into ~/.local/bin
 ```
-Check the install dir is on `PATH`; if not, tell the user the exact line to add to their shell rc
+Check the install dir is on the shell's `PATH`; if not, tell the user the exact line to add to their shell rc
 (don't silently edit their rc — offer it).
 
 ## Step 3 — Create the blackboard
@@ -152,7 +152,7 @@ If no reply arrives, check `lab ext <agent> logs` and fix the adapter before dec
 Offer the jobs in `examples/crontab.example`: a daily health check, registry maintenance
 (`lab data maint`, `lab tool maint`, `lab know maint`), and auto-convened meetings. Ask which they
 want and what times. **Append** to their crontab (`crontab -l` first — never replace it blind), using
-absolute paths and `LAB_HOME=…` in each line.
+absolute paths and an explicit `LAB_HOME=…` setting in each line.
 
 Two things to tell them. A crontab belongs to **one machine**: if they work across several login
 nodes, the jobs run only on the one where they were installed, and they die with it. And if they
@@ -194,7 +194,7 @@ Then tell the user, in plain language:
 - **what you did NOT set up**, and how to add it later
 - if you edited any project file, **exactly which ones**
 
-Finally, if this session is meant to be their lab manager, run `lab manager` and follow it: register
+Finally, if this session is meant to be their lab manager, run the `lab manager` command and follow it: register
 your own identity, then offer to bring their other sessions in. If it is not, tell them to open a
 session for that role and paste in what `lab manager` prints — otherwise the scheduled standups and
 check-ins have nobody to report to.

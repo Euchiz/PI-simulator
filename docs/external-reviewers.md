@@ -106,7 +106,8 @@ alive, so stale locks after a reboot are taken over cleanly. To disable, delete 
 lines from `crontab -e`.
 
 ## Configuration
-Set these in **`ext/<agent>/agent.env`** for one agent, or in `lab.env` as a default for all of them.
+Set these in the per-agent file **`ext/<agent>/agent.env`**, or in the shared `lab.env` as a default
+for all of them.
 Precedence is **command line > `agent.env` > `lab.env` > built-in default** (the scaffolded
 `agent.env` uses `: "${VAR:=value}"`, so a value passed on the command line still wins).
 
@@ -150,7 +151,7 @@ The codex adapter's underlying invocation (built from those vars):
   every message (a prompt-injection surface). Only loosen it deliberately, for traffic you trust.
 - Codex auth uses the stored ChatGPT account in `~/.codex/auth.json` (no API key) — ChatGPT/Codex plan
   allowance, not API billing. The bridge serializes to one call at a time and backs off on quota errors;
-  if auth expires, run `codex login` and restart.
+  if auth expires, run the `codex login` command and restart.
 
 ## Adding another external reviewer
 1. `lab ext setup <agent>` — creates the package `$LAB_HOME/ext/<agent>/` with an `adapter.sh` from the

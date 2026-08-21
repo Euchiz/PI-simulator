@@ -112,6 +112,6 @@ automatically.
 
 1. Confirm a standing multi-day allocation is acceptable to whoever runs your cluster. It is visible
    in accounting, and better asked than assumed.
-2. Run `lab migrate move --dry-run` and read it. Anything `UNVERIFIED` means the tool could not prove
-   that session's process is dead — do not force past it.
+2. Run the dry run (`lab migrate move --dry-run`) and read it. Any session marked `UNVERIFIED` means
+   the tool could not prove its process is dead — do not force past it.
 3. Watch the first rotation rather than trusting it unattended.

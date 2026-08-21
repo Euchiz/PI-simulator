@@ -31,7 +31,7 @@ moment they arrive mid-session, arm a persistent watcher once, early in the sess
     Monitor(command: "~/lab/bin/lab watch", description: "incoming lab messages", persistent: true)
 
 `lab watch` prints one line per NEW inbox message; each line becomes a notification.
-Then run `lab read` to consume them. Notes:
+Then run the `lab read` command to consume them. Notes:
 - It is harness-tracked and **dies with your session** — no orphaned process.
 - It polls (`ls` on your one inbox dir) every 30 s; `LAB_WATCH_INTERVAL=60` to relax.
   Never replace this with `find`/`inotify` — `~/lab` is NFS (see compute etiquette).
