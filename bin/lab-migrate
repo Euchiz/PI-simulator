@@ -67,6 +67,28 @@ def activity(short_id):
     if "local_bash" in kinds and out["shells"] == 0: out["shells"] = 1
     return out
 
+def local_pids():
+    """short-session-id -> pid|0, for sessions alive on THIS host. A bounded /proc read (never an
+    NFS scan). Only the old node can do this, which is why verification happens THERE.
+
+    TWO signals, unioned deliberately. Neither is complete on its own: the environ scan misses a
+    session whose main process is a CLAIMED SPARE (its own environ has no CLAUDE_JOB_DIR), and the
+    pty-socket scan misses sessions that are not pty-hosted here. Measured on this node: environ
+    found 5, sockets found 2. We bias toward "still alive" — a false ALIVE only delays a migration,
+    while a false GONE lets two sessions hold one lab identity and eat each other's inbox.
+    """
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit(): continue
+        try: env = open(f"/proc/{pid}/environ","rb").read().decode("utf8","replace")
+        except Exception: continue
+        m = re.search(r"CLAUDE_JOB_DIR=([^\x00]+)", env)
+        if m: out.setdefault(os.path.basename(m.group(1).rstrip("/")), int(pid))
+    for sock in glob.glob("/tmp/cc-daemon-*/*/pty/*.sock") + glob.glob("/tmp/cc-daemon-*/*/spare/*.pty.sock"):
+        sid = os.path.basename(sock).split(".")[0]
+        if len(sid) == 8: out.setdefault(sid, 0)          # 0 = alive here, pid unknown
+    return out
+
 def watcher_alive(name):
     f = os.path.join(WATCH, f"{pkey(name)}.lock")
     try:
@@ -272,9 +294,14 @@ def old_is_dead(rec, man):
         if not pid: return True, "same node, no pid recorded"
         try: os.kill(int(pid), 0); return False, f"pid {pid} is still running on this node"
         except Exception: return True, f"pid {pid} is gone"
-    # different node, no job id (the login-node case): nothing here can see those processes
-    return None, ("cannot verify from this node — the old host had no Slurm job. "
-                  "Close those sessions, or pass --allow-live-old if you are certain they are gone")
+    # A stamp written ON THE OLD NODE (`lab migrate verify-dead`) is authoritative: only that host
+    # can read its own /proc. This is how the login-node case is verified rather than assumed.
+    if rec.get("process_gone") is True:
+        return True, f"verified gone on {rec.get('verified_on','the old node')} at {rec.get('verified_at','?')}"
+    if rec.get("process_gone") is False:
+        return False, f"still running on the old node as pid {rec.get('old_pid')} (as of {rec.get('verified_at','?')})"
+    return None, ("unverified — the old host had no Slurm job and no verify-dead stamp. "
+                  "Run `lab migrate verify-dead` ON THE OLD NODE, or pass --allow-live-old")
 
 def backup(mid, rec):
     d = os.path.join(mig_dir(mid), "backup"); os.makedirs(d, exist_ok=True)
@@ -375,6 +402,83 @@ def cmd_aftercheck(a):
     print(f"  in each session before using it. Backups: {os.path.join(mig_dir(mid),'backup')}")
     return 0 if not (errs or dupes) else 2
 
+def cmd_verify_dead(a):
+    """Run ON THE OLD NODE. Stamps each session with whether its process is actually gone."""
+    mid = a.id or current_mid() or die("no open migration")
+    pids, host = local_pids(), os.uname().nodename
+    n_gone = n_live = 0
+    for r in read_all(mid):
+        sid = r.get("short_id")
+        if not sid: continue
+        pid = pids.get(sid)
+        alive = pid is not None
+        write_status(mid, r["agent"], process_gone=(not alive), old_pid=pid,
+                     verified_on=host, verified_at=now())
+        if alive:
+            n_live += 1
+            where = f"pid {pid}" if pid else "pty socket present"
+            print(f"  STILL RUNNING  {r['agent']:<16} {where}   (`claude stop {sid}` to end it)")
+        else:
+            n_gone += 1
+    print(f"\n  verified on {host}: {n_gone} gone, {n_live} still running")
+    if n_live: print("  move will refuse the running ones until they are stopped — re-run this after stopping.")
+    return 0 if n_live == 0 else 2
+
+def cmd_depart(a):
+    """Run ON THE OLD NODE. The whole departure: open, drain, stop, verify, hand off."""
+    mid = current_mid()
+    if not mid:
+        host_job = a.host_job
+        if not host_job:
+            hf = os.path.join(LAB, "host.json")
+            try: host_job = json.load(open(hf)).get("job")
+            except Exception: pass
+        if not host_job:
+            die("no host job. Run `lab node start` first, wait for RUNNING, then re-run depart.")
+        r = subprocess.run(["squeue","-h","-j",str(host_job),"-o","%T"], capture_output=True, text=True, timeout=60)
+        if (r.stdout or "").strip() != "RUNNING":
+            die(f"host job {host_job} is not RUNNING yet ({(r.stdout or '').strip() or 'gone'}). "
+                f"Wait for it — migrating into a node that has not started loses the handoff.")
+        print(f"=== departing to host job {host_job} ===")
+        cmd_start(argparse.Namespace(id=None, new_job=host_job, no_notify=a.no_notify,
+                                     deadline_hours=a.deadline_hours, force_at=a.force_at))
+        mid = current_mid()
+    else:
+        print(f"=== resuming departure {mid} ===")
+
+    pend = [r for r in read_all(mid) if r.get("status") == "pending"]
+    if pend:
+        print(f"\n  {len(pend)} session(s) still wrapping up:")
+        for r in pend: print(f"      {r['agent']:<16} {r.get('note','')}")
+        print("\n  Re-run `lab migrate depart` when they have registered, or force them:")
+        print("      lab migrate force")
+        return 2
+
+    movable = [r for r in read_all(mid) if r.get("status") in ("closed","forced") and r.get("transcript")]
+    pids = local_pids()
+    live = [r for r in movable if pids.get(r.get("short_id"))]
+    if live:
+        if not a.stop_sessions:
+            print(f"\n  {len(live)} session(s) are drained but their processes are STILL RUNNING here.")
+            print("  They cannot be resumed elsewhere while they hold their lab identity. Either:")
+            for r in live: print(f"      claude stop {r['short_id']}      # {r['agent']}")
+            print("  ...or re-run:  lab migrate depart --stop-sessions")
+            return 2
+        me = os.path.basename(os.environ.get("CLAUDE_JOB_DIR","").rstrip("/"))
+        for r in live:
+            sid = r["short_id"]
+            if sid == me:
+                print(f"  SKIP  {r['agent']} — this is the session running depart; stop it last, by hand")
+                continue
+            subprocess.run(["claude","stop",sid], capture_output=True, timeout=120)
+            print(f"  stopped {r['agent']} ({sid})")
+
+    rc = cmd_verify_dead(argparse.Namespace(id=mid))
+    print(f"\n=== next ===")
+    print(f"  The successor host job will pull automatically once this host is gone.")
+    print(f"  To pull now, on the HOST node:   lab migrate move --id {mid} && lab migrate aftercheck --id {mid}")
+    return rc
+
 def main():
     p = argparse.ArgumentParser(prog="lab migrate")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -401,6 +505,17 @@ def main():
     mv.set_defaults(fn=cmd_move)
     ac = sub.add_parser("aftercheck", help="verify the move and report what needs attention")
     ac.add_argument("--id"); ac.add_argument("--finalise", action="store_true"); ac.set_defaults(fn=cmd_aftercheck)
+    vd = sub.add_parser("verify-dead", help="ON THE OLD NODE: stamp which session processes are gone")
+    vd.add_argument("--id"); vd.set_defaults(fn=cmd_verify_dead)
+    dp = sub.add_parser("depart", help="ON THE OLD NODE: open, drain, stop, verify, hand off — one command")
+    dp.add_argument("--host-job", dest="host_job"); dp.add_argument("--no-notify", action="store_true")
+    dp.add_argument("--stop-sessions", dest="stop_sessions", action="store_true",
+                    help="actually `claude stop` the drained sessions (they keep their conversations)")
+    dp.add_argument("--deadline-hours", dest="deadline_hours", type=int,
+                    default=int(os.environ.get("LAB_HOST_WARN_HOURS", 8)))
+    dp.add_argument("--force-at", dest="force_at", type=int,
+                    default=int(os.environ.get("LAB_HOST_FORCE_AT_HOURS", 2)))
+    dp.set_defaults(fn=cmd_depart)
     f = sub.add_parser("force", help="force-close stragglers so the loop cannot block")
     f.add_argument("--id"); f.add_argument("--agent"); f.add_argument("--reason"); f.set_defaults(fn=cmd_force)
     a = p.parse_args()

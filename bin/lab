@@ -208,7 +208,8 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
                 lab know app [--fragment] · lab know export     (the long forms)
   ANNOUNCE      lab note · board · status · digest · health
   NODE          lab node start|status|rotate|stop        the allocation the lab runs inside
-  MIGRATE       lab migrate start|precheck|status|close|force|move|aftercheck
+  MIGRATE       lab migrate depart          (on the OLD node: one command to move out)
+                lab migrate start|precheck|status|close|force|verify-dead|move|aftercheck
   ADMIN         lab setup [name] · init · register · manager · technician · projects · name · whoami · ext
 
   lab help <topic>     topics: messaging, tasks, meetings, data, tools, knowledge, board, admin
