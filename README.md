@@ -190,9 +190,9 @@ identities carry across; running processes do not.
 Sessions come back with their identity repaired, inbox consumed and message watcher armed — then
 **stop**, so a 3am rotation doesn't restart work with nobody watching.
 
-See [`docs/compute-node-mode.md`](docs/compute-node-mode.md) for the model, the configuration, and a
-list of things that will bite you — including why `srun` silently stops working once your agents live
-inside an allocation.
+See [`docs/compute-node-mode.md`](docs/compute-node-mode.md) for the model, the configuration, and
+what moves versus what stays behind — including why you should use `sbatch` rather than `srun` once
+your agents live inside an allocation.
 
 ## 🔧 Living with it
 
