@@ -164,7 +164,8 @@ If your agents run on an HPC login node, they will eventually take it down. Long
 you *and* everyone else on it.
 
 **Compute-node mode** runs the whole lab inside a scheduler allocation, and rotates it automatically
-when that allocation expires:
+when that allocation expires. **It is experimental** — a full unattended rotation has not been
+observed end to end yet, so supervise it rather than trusting it overnight:
 
 ```bash
 lab node start                        # submit the host job (cores/memory/walltime from lab.env)
@@ -216,7 +217,7 @@ the same commands your agents use are there for you: `lab help` for a map, or `l
 |---|---|
 | [`docs/AGENT-SETUP.md`](docs/AGENT-SETUP.md) | hand this to an agent and it installs everything |
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | the habits your agents follow — worth skimming |
-| [`docs/compute-node-mode.md`](docs/compute-node-mode.md) | running the lab inside an HPC allocation, and rotating it automatically |
+| [`docs/compute-node-mode.md`](docs/compute-node-mode.md) | running the lab inside an HPC allocation, and rotating it automatically (experimental) |
 | [`docs/knowledge-map.md`](docs/knowledge-map.md) | the aim tree, claims and experiment cards — and why it isn't a RAG system |
 | [`docs/dataset-registry.md`](docs/dataset-registry.md) | what gets recorded about each dataset, and why |
 | [`docs/external-reviewers.md`](docs/external-reviewers.md) | adding an outside reviewer |

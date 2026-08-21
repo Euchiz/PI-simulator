@@ -164,7 +164,7 @@ because compute nodes have no `crond`.
 If their agents run on a shared HPC login node, several long-lived sessions will eventually
 overwhelm it. `lab node start` runs the whole lab inside a scheduler allocation and rotates it
 automatically when that allocation ends. Point them at
-[`compute-node-mode.md`](compute-node-mode.md) rather than setting it up during first install — it
+[`compute-node-mode.md`](compute-node-mode.md) (experimental) rather than setting it up during first install — it
 is a decision about cluster resources, not part of getting started.
 
 ## Step 10 — Verify, then hand over

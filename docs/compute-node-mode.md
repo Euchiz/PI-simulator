@@ -1,5 +1,14 @@
 # Compute-node mode
 
+> ⚠️ **Experimental.** Everything here runs, but the piece that matters most — a full automatic
+> rotation from one allocation to the next, unattended — has not yet been observed end to end. It is
+> being exercised on a live lab now. Until a rotation has completed on its own, treat this as
+> something to supervise, keep the pre-migration transcripts, and expect to intervene.
+>
+> Verified so far: a hand-run migration (drain → move → aftercheck), and sessions surviving a
+> disconnect. Not yet verified: the unattended handoff at the walltime boundary, and the host job
+> starting the agent daemon (that path first runs at the next rotation).
+
 Run the lab inside a scheduler allocation instead of on a login node, and rotate it automatically
 when that allocation ends.
 
