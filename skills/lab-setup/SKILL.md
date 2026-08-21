@@ -48,7 +48,8 @@ Report anything that fails; stay quiet about what passes.
 | identity resolves | `lab name` | mail is queuing into nobody's inbox |
 | watcher holds a lock | `ls ~/lab/.watch/` then `kill -0 <pid>` | live delivery is off; mail only arrives at next startup |
 | deployed CLI matches source | `cd ~/PI-simulator && git fetch -q && git status -sb \| head -1`, then `for f in bin/*; do cmp -s "$f" ~/lab/bin/$(basename $f); done` | agents are running a stale `lab`; redeploy with `cp` |
-| cron is scheduled | `crontab -l \| grep -c 'know maint\|data maint\|tool maint'` | registries stop refreshing (expect 3+) |
+| scheduled work is running | `lab node status`, then `ls ~/lab/.host-cron/ \| grep "$(date +%F)"` | daily maintenance, the registries and the meeting cadence ride the **host job**, not cron — compute nodes have no crond. Today's stamps missing + host job down = nothing is refreshing. **Do NOT check `crontab` for maint entries — they were deliberately removed** |
+| external reviewers | `lab ext` | codex/agy down. Their keepalive is cron on a **login node**, so this cannot be fixed from the host job — it needs someone on a login node |
 | registries reachable | `lab claim find x >/dev/null; lab data list \| head -1; lab tool list \| head -1` | a DB is locked or corrupt |
 | card pointers resolve | `lab know maint 2>&1 \| grep -i 'card audit'` | a claim points at a card file that is gone |
 | approvals not stalled | `lab aim pending` | tree edits are waiting on Zac and nobody noticed |
@@ -76,7 +77,11 @@ stands. If there is genuinely nothing in flight, stop after the report and wait.
 
 - `lab read` **consumes** this session's inbox (that is correct — it is yours). Reading *another*
   session's inbox only peeks; never consume someone else's mail.
-- Refresh the knowledge map with `lab map` (nightly cron already does it at 08:21). Regenerating the
-  file does **not** update a published claude.ai artifact — that needs a republish.
+- Refresh the knowledge map with `lab map`. The **host job** regenerates it daily (not cron —
+  compute nodes have no crond); stamps land in `~/lab/.host-cron/`. Regenerating the file does
+  **not** update a published claude.ai artifact — that needs a republish.
+- The lab runs inside a Slurm allocation that **rotates**. `lab node status` says where it lives and
+  how long is left; `lab node enter` opens a shell on it. Around 8h before the walltime ends every
+  session gets a TOP-PRIORITY wrap-up message — that is the rotation, not an incident.
 - If this skill is invoked repeatedly in one session, steps 2 and 3 are still safe to repeat; step 1
   should be a no-op once identity resolves.
