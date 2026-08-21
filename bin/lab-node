@@ -15,12 +15,12 @@ set -uo pipefail
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 HOSTF="$LAB_HOME/host.json"
 
-PART="${LAB_NODE_PARTITION:-defq}"; CPUS="${LAB_NODE_CPUS:-8}"
-MEM="${LAB_NODE_MEM:-16G}";        TIME="${LAB_NODE_TIME:-45-00:00:00}"
-WARN_H="${LAB_NODE_WARN_HOURS:-8}"; FORCE_H="${LAB_NODE_FORCE_AT_HOURS:-2}"
+PART="${LAB_HOST_PARTITION:-defq}"; CPUS="${LAB_HOST_CPUS:-8}"
+MEM="${LAB_HOST_MEM:-16G}";        TIME="${LAB_HOST_TIME:-45-00:00:00}"
+WARN_H="${LAB_HOST_WARN_HOURS:-8}"; FORCE_H="${LAB_HOST_FORCE_AT_HOURS:-2}"
 
 submit() {   # -> job id on stdout. $1 = optional "successor" marker
-  local warn_s="${LAB_NODE_WARN_SECONDS:-$(( WARN_H * 3600 ))}"   # seconds override: testing + short rotations
+  local warn_s="${LAB_HOST_WARN_SECONDS:-$(( WARN_H * 3600 ))}"   # seconds override: testing + short rotations
   sbatch --parsable --partition="$PART" -c "$CPUS" --mem "$MEM" -t "$TIME" \
          --job-name=lab-node --signal="B:USR1@${warn_s}" \
          -o "$LAB_HOME/node-%j.log" \
@@ -37,8 +37,8 @@ cmd_start() {
   local j; j=$(submit)
   [ -n "$j" ] || die "sbatch failed"
   echo "lab node: submitted host job $j  ($PART, ${CPUS}c/${MEM}, walltime $TIME)"
-  if [ -n "${LAB_NODE_WARN_SECONDS:-}" ]; then
-    echo "  warning fires at T-${LAB_NODE_WARN_SECONDS}s · stragglers forced ${LAB_NODE_FORCE_GAP_SECONDS:-?}s later"
+  if [ -n "${LAB_HOST_WARN_SECONDS:-}" ]; then
+    echo "  warning fires at T-${LAB_HOST_WARN_SECONDS}s · stragglers forced ${LAB_HOST_FORCE_GAP_SECONDS:-?}s later"
   else
     echo "  warning fires at T-${WARN_H}h · stragglers forced at T-${FORCE_H}h"
   fi
@@ -84,7 +84,7 @@ PY
 }
 
 _warn() {   # the pre-termination signal handler
-  local lead="${LAB_NODE_WARN_SECONDS:+${LAB_NODE_WARN_SECONDS}s}"; lead="${lead:-~${WARN_H}h}"
+  local lead="${LAB_HOST_WARN_SECONDS:+${LAB_HOST_WARN_SECONDS}s}"; lead="${lead:-~${WARN_H}h}"
   echo "[lab-node] $(date +%T) SIGUSR1 — $lead left. Submitting successor + opening migration."
   local new; new=$(submit successor)
   echo "[lab-node] successor job: ${new:-FAILED}"
@@ -94,7 +94,7 @@ _warn() {   # the pre-termination signal handler
 }
 
 _force_at_deadline() {
-  local gap="${LAB_NODE_FORCE_GAP_SECONDS:-$(( (WARN_H - FORCE_H) * 3600 ))}"
+  local gap="${LAB_HOST_FORCE_GAP_SECONDS:-$(( (WARN_H - FORCE_H) * 3600 ))}"
   sleep "$gap"
   echo "[lab-node] $(date +%T) T-${FORCE_H}h — forcing any stragglers"
   "$SELF/lab" migrate force --reason "deadline reached; node ends in ${FORCE_H}h" || true
