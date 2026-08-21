@@ -24,7 +24,7 @@ Three facts shape everything:
 - **A session's durable part is its transcript**, a `.jsonl` on shared storage. The process is
   disposable.
 - **Processes cannot migrate.** There is no "move" — only *close here, resume there*.
-- **Identity follows the name.** A resumed session started with `--name poreior` inherits poreior's
+- **Identity follows the name.** A resumed session started with `--name analysis` inherits that agent's
   inbox, roster entry and history, because the lab resolves identity from the session's name.
 
 So a migration is: drain every session to a known-safe state, then resume each transcript on the new
@@ -74,7 +74,7 @@ unattended at 3am.
 `LAB_HOST_*` in `$LAB_HOME/lab.env`:
 
 ```bash
-LAB_HOST_PARTITION="${LAB_HOST_PARTITION:-defq}"
+LAB_HOST_PARTITION="${LAB_HOST_PARTITION:-defq}"   # set this to your cluster's partition
 LAB_HOST_CPUS="${LAB_HOST_CPUS:-8}"
 LAB_HOST_MEM="${LAB_HOST_MEM:-16G}"
 LAB_HOST_TIME="${LAB_HOST_TIME:-45-00:00:00}"
@@ -95,38 +95,18 @@ submission.
 | **Stays on a login node** | external reviewers, because they run where their binaries are installed. Their keepalive is the one thing left on `cron` |
 | **Does not survive** | running processes and shells. Batch jobs you submitted are independent and outlive the node — record their ids |
 
-## Things that will bite you
+## Two rules that change once you are inside an allocation
 
-Every one of these was found by running it, not by reading it.
+**Use `sbatch`, never `srun`, for compute.** Inside an allocation `srun` nests into the enclosing job
+rather than requesting a new one, so it is capped by that job's resources — asking for more memory
+than your allocation holds simply fails. `sbatch` always creates an independent job and behaves the
+same everywhere, including from inside another job. Submitted jobs also outlive the node, so record
+their ids if anything downstream needs the result.
 
-**`sbatch`, never `srun`.** Inside an allocation, `srun` nests into the enclosing job instead of
-getting a new node: `srun --mem 64G` from a 2 GB allocation fails with *"Memory required by task is
-not available"*. Once your agents live inside an allocation, every `srun` habit silently breaks.
-
-**`--signal` with `--wrap` needs `exec`.** `sbatch --wrap="cmd"` runs your command as a child of
-`/bin/sh`, and `B:USR1` targets that shell — which has no trap, so the default action **kills the
-job** at the warning instead of handling it. Use `--wrap="exec ..."`, and hold the allocation with
-`sleep 60 & wait` so the trap fires promptly.
-
-**A warning lead longer than the walltime fires immediately.** A short test job with an 8-hour lead
-rotates the instant it starts. Clamp it.
-
-**`/proc` answers only for the local node.** This is the one that bit three separate times. A pid in
-a lock file on shared storage, an inherited environment variable, a state field — none of them tell
-you whether something is alive on *another* host. Every occurrence presented the same way: a
-perfectly healthy thing reported as dead, or a dead one reported as alive. Prefer the scheduler
-(`squeue`), a host-stamped lock, or an outcome you can observe (is the inbox being drained?).
-
-**Resuming does not preserve full history.** `--resume` carries a working context, not the archive —
-measured at 25% of entries for one session and **1%** for a long-lived one. Pre-migration transcripts
-are the only complete record, and must never be pruned automatically. (They also can't be avoided:
-a 250 MB transcript was never going to fit in a context window.)
-
-**Old sessions linger in the session view and are trivial to misclick.** They share a name with the
-migrated one, and opening an old one *forks a second live session under the same identity* — two
-sessions then consume each other's inbox. The view enumerates job directories, not transcripts, so
-moving a stopped session's job dir aside removes it from the view while leaving its transcript
-intact.
+**Never prune a pre-migration transcript.** Resuming carries a working context, not the full archive,
+so a resumed session holds a fraction of its original conversation. The pre-migration transcripts are
+the only complete record. `move` backs each one up before touching it, and nothing is ever pruned
+automatically.
 
 ## Before you migrate for real
 
