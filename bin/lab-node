@@ -127,7 +127,20 @@ cmd_enter() {   # open a shell ON the host node
   fi
   # --overlap shares the existing allocation instead of asking for new resources; direct ssh to
   # compute nodes is refused on this cluster, so Slurm is the only door in.
-  exec srun --jobid="$j" --overlap --pty bash -l
+  #
+  # The step lives only as long as its srun CLIENT, which dies when you type `exit`, close the
+  # terminal, or drop the ssh connection — and Slurm then SIGKILLs the step, taking every session
+  # started inside it. Running the client inside tmux converts all three into a DETACH: the client
+  # stays put on the login node, so the step and its sessions survive. Re-entering re-attaches the
+  # same shell (-A) rather than opening a second one. Nesting tmux inside tmux would be worse than
+  # not using it, and a host without tmux still gets the plain door.
+  local inner="srun --jobid=$j --overlap --pty bash -l"
+  if [ -z "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
+    echo "          tmux: press Ctrl-b then d to DETACH (sessions keep running; \`exit\` ends them)"
+    exec tmux new-session -A -s lab-node "$inner"
+  fi
+  [ -n "${TMUX:-}" ] || echo "lab node: NOTE tmux not found — exiting this shell kills sessions started in it"
+  exec $inner
 }
 
 cmd_stop() {
