@@ -207,7 +207,8 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   FRONTEND      lab map          <- refresh the knowledge map (~/lab/KNOWLEDGE_MAP.html)
                 lab know app [--fragment] · lab know export     (the long forms)
   ANNOUNCE      lab note · board · status · digest · health
-  MIGRATE       lab migrate start|precheck|status|close|force   (compute-node mode)
+  NODE          lab node start|status|rotate|stop        the allocation the lab runs inside
+  MIGRATE       lab migrate start|precheck|status|close|force|move|aftercheck
   ADMIN         lab setup [name] · init · register · manager · technician · projects · name · whoami · ext
 
   lab help <topic>     topics: messaging, tasks, meetings, data, tools, knowledge, board, admin
@@ -573,6 +574,7 @@ case "$cmd" in
   card)      exec python3 "$SELF/lab-know" card "$@";;
   map)       exec python3 "$SELF/lab-know" map "$@";;   # one-word knowledge-map refresh
   migrate)   exec python3 "$SELF/lab-migrate" "$@";;    # drain + re-attach sessions across nodes
+  node)      exec bash "$SELF/lab-node" "$@";;          # the allocation the lab runs inside
   know)      exec python3 "$SELF/lab-know" "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;

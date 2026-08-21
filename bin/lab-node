@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# lab-node — the allocation the lab runs inside, and the rotation loop between allocations.
+# Spec: ~/lab/decisions/compute-node-mode-design.md §2.1, §5.6
+#
+#   lab node start          submit the host job (settings from lab.env: LAB_NODE_*)
+#   lab node status         where the lab lives, and how long is left
+#   lab node rotate         trigger the termination sequence NOW (same path the signal takes)
+#   lab node stop           cancel the host job
+#
+# The dying host never drives the handoff: on the pre-termination signal it only submits the
+# successor and publishes the migration registry to NFS. The SUCCESSOR polls for greenlight and
+# pulls. The actor is always the host that will still exist when the work lands.
+set -uo pipefail
+. "$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lab-common.sh"
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+HOSTF="$LAB_HOME/host.json"
+
+PART="${LAB_NODE_PARTITION:-defq}"; CPUS="${LAB_NODE_CPUS:-8}"
+MEM="${LAB_NODE_MEM:-16G}";        TIME="${LAB_NODE_TIME:-45-00:00:00}"
+WARN_H="${LAB_NODE_WARN_HOURS:-8}"; FORCE_H="${LAB_NODE_FORCE_AT_HOURS:-2}"
+
+submit() {   # -> job id on stdout. $1 = optional "successor" marker
+  local warn_s="${LAB_NODE_WARN_SECONDS:-$(( WARN_H * 3600 ))}"   # seconds override: testing + short rotations
+  sbatch --parsable --partition="$PART" -c "$CPUS" --mem "$MEM" -t "$TIME" \
+         --job-name=lab-node --signal="B:USR1@${warn_s}" \
+         -o "$LAB_HOME/node-%j.log" \
+         --wrap="exec env LAB_HOME='$LAB_HOME' bash '$SELF/lab-node' _run" 2>/dev/null
+}
+
+cmd_start() {
+  if [ -f "$HOSTF" ]; then
+    local j; j=$(python3 -c "import json;print(json.load(open('$HOSTF')).get('job',''))" 2>/dev/null)
+    if [ -n "$j" ] && squeue -h -j "$j" >/dev/null 2>&1; then
+      die "a host job is already running (job $j). \`lab node status\`, or \`lab node stop\` first."
+    fi
+  fi
+  local j; j=$(submit)
+  [ -n "$j" ] || die "sbatch failed"
+  echo "lab node: submitted host job $j  ($PART, ${CPUS}c/${MEM}, walltime $TIME)"
+  if [ -n "${LAB_NODE_WARN_SECONDS:-}" ]; then
+    echo "  warning fires at T-${LAB_NODE_WARN_SECONDS}s · stragglers forced ${LAB_NODE_FORCE_GAP_SECONDS:-?}s later"
+  else
+    echo "  warning fires at T-${WARN_H}h · stragglers forced at T-${FORCE_H}h"
+  fi
+  echo "  watch it:  lab node status"
+}
+
+cmd_status() {
+  [ -f "$HOSTF" ] || { echo "no host job recorded (lab node start)"; return 1; }
+  python3 - "$HOSTF" <<'PY'
+import json,sys,subprocess,datetime
+h=json.load(open(sys.argv[1])); j=h.get("job","")
+r=subprocess.run(["squeue","-h","-j",str(j),"-o","%T|%N|%L"],capture_output=True,text=True)
+line=(r.stdout or "").strip()
+print(f"  host job : {j}")
+print(f"  node     : {h.get('node','?')}   started {h.get('started','?')}")
+if line:
+    st,node,left=(line.split("|")+["","",""])[:3]
+    print(f"  state    : {st} on {node}")
+    print(f"  time left: {left}")
+else:
+    print("  state    : NOT RUNNING (finished or cancelled) — the lab is not on this node any more")
+print(f"  end time : {h.get('end','?')}")
+PY
+}
+
+cmd_stop() {
+  local j; j=$(python3 -c "import json;print(json.load(open('$HOSTF')).get('job',''))" 2>/dev/null)
+  [ -n "$j" ] || die "no host job recorded"
+  scancel "$j" && echo "lab node: cancelled $j"
+}
+
+# --- internals (run INSIDE the allocation) -----------------------------------------------
+_register() {
+  local endt; endt=$(scontrol show job "${SLURM_JOB_ID:-0}" 2>/dev/null | grep -o 'EndTime=[^ ]*' | cut -d= -f2)
+  python3 - "$HOSTF" "${SLURM_JOB_ID:-}" "$(hostname)" "$endt" <<'PY'
+import json,sys,datetime
+p,job,node,end=sys.argv[1:5]
+json.dump({"job":job,"node":node,"end":end,
+           "started":datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")},
+          open(p,"w"),indent=2)
+PY
+  echo "[lab-node] registered host job ${SLURM_JOB_ID:-?} on $(hostname), ends $endt"
+}
+
+_warn() {   # the pre-termination signal handler
+  local lead="${LAB_NODE_WARN_SECONDS:+${LAB_NODE_WARN_SECONDS}s}"; lead="${lead:-~${WARN_H}h}"
+  echo "[lab-node] $(date +%T) SIGUSR1 — $lead left. Submitting successor + opening migration."
+  local new; new=$(submit successor)
+  echo "[lab-node] successor job: ${new:-FAILED}"
+  "$SELF/lab" migrate start --new-job "${new:-}" \
+      --deadline-hours "$WARN_H" --force-at "$FORCE_H" || true
+  ( _force_at_deadline & )     # background: force stragglers so the loop cannot block
+}
+
+_force_at_deadline() {
+  local gap="${LAB_NODE_FORCE_GAP_SECONDS:-$(( (WARN_H - FORCE_H) * 3600 ))}"
+  sleep "$gap"
+  echo "[lab-node] $(date +%T) T-${FORCE_H}h — forcing any stragglers"
+  "$SELF/lab" migrate force --reason "deadline reached; node ends in ${FORCE_H}h" || true
+}
+
+_bootstrap() {   # am I a successor? if so, wait for greenlight and PULL
+  local mid; mid=$(python3 - "$LAB_HOME" "${SLURM_JOB_ID:-}" <<'PY'
+import json,os,sys,glob
+lab,job=sys.argv[1:3]
+for d in sorted(glob.glob(os.path.join(lab,"migrate","*")),reverse=True):
+    m=os.path.join(d,"manifest.json")
+    try: man=json.load(open(m))
+    except Exception: continue
+    if not man.get("finalised") and str(man.get("new_job")) == str(job):
+        print(os.path.basename(d)); break
+PY
+)
+  [ -n "$mid" ] || { echo "[lab-node] not a successor — nothing to pull"; return 0; }
+  echo "[lab-node] I am the successor for migration $mid — waiting for greenlight"
+  # Greenlight needs BOTH: every session registered closed/forced, AND the OLD JOB GONE.
+  # A session that has "wrapped up" still has a live process until its node dies, and `move`
+  # refuses to resume while the old process lives (two sessions sharing a lab name eat each
+  # other's inbox). Polling on sessions alone would fire early, skip everything, and never retry.
+  local oldjob; oldjob=$(python3 -c "import json;print(json.load(open('$LAB_HOME/migrate/$mid/manifest.json')).get('old_job',''))" 2>/dev/null)
+  local waited=0 max=$(( (WARN_H + 2) * 3600 ))
+  while [ $waited -lt $max ]; do
+    local sessions_ready=0 old_gone=0
+    "$SELF/lab" migrate status --id "$mid" >/dev/null 2>&1 && sessions_ready=1
+    if [ -z "$oldjob" ] || ! squeue -h -j "$oldjob" >/dev/null 2>&1; then old_gone=1; fi
+    if [ "$sessions_ready" = 1 ] && [ "$old_gone" = 1 ]; then
+      echo "[lab-node] GREENLIT (sessions drained, old job $oldjob gone) — pulling"
+      "$SELF/lab" migrate move --id "$mid" || true
+      "$SELF/lab" migrate aftercheck --id "$mid" --finalise || true
+      return 0
+    fi
+    [ $(( waited % 600 )) = 0 ] && echo "[lab-node] waiting: sessions_ready=$sessions_ready old_gone=$old_gone (${waited}s)"
+    sleep 30; waited=$(( waited + 30 ))
+  done
+  echo "[lab-node] gave up waiting for greenlight after $((max/3600))h — run \`lab migrate move\` by hand"
+}
+
+_run() {
+  # EXEC matters: --wrap runs the command as a CHILD of /bin/sh, and `--signal=B:USR1` targets that
+  # shell. Without `exec` the signal hits a shell with no trap and the DEFAULT action for SIGUSR1
+  # terminates the job (observed: exit 0:10, killed before the handler ever ran). With `exec`, this
+  # script IS the signalled process, so the trap applies.
+  trap '_warn' USR1
+  _register
+  _bootstrap
+  echo "[lab-node] holding the allocation. Attach with: srun --jobid=${SLURM_JOB_ID:-?} --overlap --pty bash"
+  while true; do sleep 60 & wait $!; done      # `wait` so the USR1 trap fires promptly
+}
+
+case "${1:-}" in
+  start)  cmd_start;;
+  status) cmd_status;;
+  stop)   cmd_stop;;
+  rotate) _warn;;
+  _run)   _run;;
+  _register) _register;;
+  *) echo "usage: lab node start|status|rotate|stop"; exit 1;;
+esac
