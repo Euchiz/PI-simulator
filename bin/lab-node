@@ -189,6 +189,38 @@ PY
   echo "[lab-node] gave up waiting for greenlight after $((max/3600))h — run \`lab migrate move\` by hand"
 }
 
+# --- periodic work, run from the hold loop because compute nodes have no crond ---------------
+# Guarded by a STAMP FILE per occurrence, not by a loop counter. A counter means "every N
+# iterations since this job started", which slides a little further from the wall clock every
+# rotation — fine for "every ~3 minutes", wrong for "daily" or "Monday 15:00".
+_once() {   # _once <stamp-key> <command...>   -> runs at most once per key, ever
+  local key="$1"; shift
+  local d="$LAB_HOME/.host-cron"; mkdir -p "$d"
+  local f="$d/$key"
+  [ -e "$f" ] && return 0
+  : > "$f"
+  echo "[lab-node] $(date +%T) scheduled: $key"
+  "$@" >>"$LAB_HOME/.host-cron/run.log" 2>&1 || echo "[lab-node] ⚠ $key failed (see .host-cron/run.log)"
+}
+
+_schedule_tick() {
+  local today dow hour
+  today=$(date +%F); dow=$(date +%u); hour=$(date +%-H)
+  # daily maintenance, once the day has reached 08:00 (matches the old cron window)
+  if [ "$hour" -ge 8 ]; then
+    _once "daily-$today"   "$SELF/lab-daily"
+    _once "data-$today"    "$SELF/lab" data maint
+    _once "tool-$today"    "$SELF/lab" tool maint
+    _once "know-$today"    "$SELF/lab" know maint
+  fi
+  # weekly meeting cadence (Mon 15:00 convene · Tue 10:00 checkin · Thu 22:00 convene)
+  [ "$dow" = 1 ] && [ "$hour" -ge 15 ] && _once "convene-$today" "$SELF/lab" meeting convene
+  [ "$dow" = 2 ] && [ "$hour" -ge 10 ] && _once "checkin-$today" "$SELF/lab" meeting checkin
+  [ "$dow" = 4 ] && [ "$hour" -ge 22 ] && _once "convene-$today" "$SELF/lab" meeting convene
+  # keep the stamp dir from growing without bound
+  find "$LAB_HOME/.host-cron" -maxdepth 1 -type f -mtime +30 -delete 2>/dev/null || true
+}
+
 _run() {
   # EXEC matters: --wrap runs the command as a CHILD of /bin/sh, and `--signal=B:USR1` targets that
   # shell. Without `exec` the signal hits a shell with no trap and the DEFAULT action for SIGUSR1
@@ -207,6 +239,7 @@ _run() {
     i=$(( i + 1 ))
     if [ $(( i % 3 )) = 0 ]; then "$SELF/lab-memwatch"  >/dev/null 2>&1 || true; fi
     if [ $(( i % 2 )) = 0 ]; then "$SELF/lab-scanwatch" >/dev/null 2>&1 || true; fi
+    if [ $(( i % 5 )) = 0 ]; then _schedule_tick; fi
   done
 }
 
