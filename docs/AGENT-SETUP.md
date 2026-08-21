@@ -102,13 +102,19 @@ appear once they've actually run something, so an empty-ish roster here is norma
 
 ## Step 6 — Teach the agents the protocol
 
-Each participating session needs two things:
+Each participating session needs three things:
 
-1. **Protocol in its `CLAUDE.md`** so it knows the commands at session start. Use
-   `examples/CLAUDE.md.example` — **append**, never overwrite an existing `CLAUDE.md`.
+1. **The protocol, in ONE user-level file.** Put `examples/CLAUDE.md.example` into
+   **`~/.claude/CLAUDE.md`**, which Claude Code loads for *every* session in *every* directory.
+   Do **not** copy it into each project's `CLAUDE.md`: per-project copies drift, and the failure is
+   silent — an agent quietly running an older rule set that nobody notices. Project `CLAUDE.md`
+   files should hold only what is specific to that project.
 2. **A SessionStart hook** so it reads its inbox automatically. See
-   `examples/settings.json.example`; merge the `hooks` key into the project's
-   `.claude/settings.json` rather than replacing the file.
+   `examples/settings.json.example`; merge the `hooks` key into `~/.claude/settings.json` (user
+   level, same reasoning) rather than replacing the file.
+3. **The skills** — `./install.sh` copies `skills/` into `~/.claude/skills/`. `/lab-setup`
+   re-attaches a session after a restart: repairs its identity, consumes its inbox, arms its message
+   watcher and self-checks the wiring.
 
 ⚠️ **These are the user's project files, and several sessions may share a directory. Show the exact
 diff and get explicit approval before writing.** If a project already has a `SessionStart` hook,
@@ -143,11 +149,25 @@ If no reply arrives, check `lab ext <agent> logs` and fix the adapter before dec
 
 ## Step 8 — Scheduled jobs (optional)
 
-Offer the jobs in `examples/crontab.example`: a daily health check, dataset-registry maintenance,
-and auto-convened meetings. Ask which they want and what times. **Append** to their crontab
-(`crontab -l` first — never replace it blind), using absolute paths and `LAB_HOME=…` in each line.
+Offer the jobs in `examples/crontab.example`: a daily health check, registry maintenance
+(`lab data maint`, `lab tool maint`, `lab know maint`), and auto-convened meetings. Ask which they
+want and what times. **Append** to their crontab (`crontab -l` first — never replace it blind), using
+absolute paths and `LAB_HOME=…` in each line.
 
-## Step 9 — Verify, then hand over
+Two things to tell them. A crontab belongs to **one machine**: if they work across several login
+nodes, the jobs run only on the one where they were installed, and they die with it. And if they
+later move the lab onto a compute allocation (Step 9), scheduling moves into the host job instead,
+because compute nodes have no `crond`.
+
+## Step 9 — Compute-node mode (optional, HPC only)
+
+If their agents run on a shared HPC login node, several long-lived sessions will eventually
+overwhelm it. `lab node start` runs the whole lab inside a scheduler allocation and rotates it
+automatically when that allocation ends. Point them at
+[`compute-node-mode.md`](compute-node-mode.md) rather than setting it up during first install — it
+is a decision about cluster resources, not part of getting started.
+
+## Step 10 — Verify, then hand over
 
 Run this and show the output:
 ```bash
@@ -157,6 +177,8 @@ lab task add --title "setup check" --desc "Confirm the task bulletin works."
 lab task                                   # should list it
 lab task done 1 --note "verified"
 lab data check SOME-ACCESSION              # dedup gate: "NOT FOUND" is the correct answer here
+lab tool find anything                     # tool registry (empty is fine — it proves it works)
+lab claim find anything                    # knowledge map: claims, aims, experiment cards
 lab ext                                    # external agents, if configured
 bash -n "$LAB_HOME/lab.env" && echo "config ok"
 ```
