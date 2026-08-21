@@ -30,6 +30,23 @@ _walltime_s() {
              *) echo $(( d*86400 + ${1:-0} ));; esac
 }
 
+# Re-read LAB_HOST_* from lab.env RIGHT NOW. The host job captures its config once at start, so a
+# long-running node would submit a successor using whatever was configured when IT launched — a
+# 7-day host would keep spawning 7-day successors however lab.env was retuned. The unset is required
+# because lab.env uses ${VAR:-default} form: without it, values already exported win and re-sourcing
+# is a no-op. Only the rotation path calls this; `lab node start` keeps honouring a one-off env
+# override (LAB_HOST_TIME=1-00:00:00 lab node start).
+_reload_config() {
+  unset LAB_HOST_PARTITION LAB_HOST_CPUS LAB_HOST_MEM LAB_HOST_TIME LAB_HOST_WARN_HOURS LAB_HOST_FORCE_AT_HOURS
+  if [ -f "$LAB_HOME/lab.env" ] && bash -n "$LAB_HOME/lab.env" 2>/dev/null; then
+    set -a; . "$LAB_HOME/lab.env"; set +a
+  fi
+  PART="${LAB_HOST_PARTITION:-defq}"; CPUS="${LAB_HOST_CPUS:-8}"
+  MEM="${LAB_HOST_MEM:-16G}";        TIME="${LAB_HOST_TIME:-45-00:00:00}"
+  WARN_H="${LAB_HOST_WARN_HOURS:-8}"; FORCE_H="${LAB_HOST_FORCE_AT_HOURS:-2}"
+  echo "[lab-node] config for successor: $PART ${CPUS}c/${MEM} walltime=$TIME warn=T-${WARN_H}h"
+}
+
 submit() {   # -> job id on stdout. $1 = optional "successor" marker
   local warn_s="${LAB_HOST_WARN_SECONDS:-$(( WARN_H * 3600 ))}"   # seconds override: testing + short rotations
   # GUARD: if the lead is >= the walltime, Slurm fires the signal immediately and the node rotates
@@ -127,6 +144,7 @@ PY
 _warn() {   # the pre-termination signal handler
   local lead="${LAB_HOST_WARN_SECONDS:+${LAB_HOST_WARN_SECONDS}s}"; lead="${lead:-~${WARN_H}h}"
   echo "[lab-node] $(date +%T) SIGUSR1 — $lead left. Submitting successor + opening migration."
+  _reload_config                 # pick up any retune before submitting the successor
   local new; new=$(submit successor)
   echo "[lab-node] successor job: ${new:-FAILED}"
   if [ -n "$new" ]; then
