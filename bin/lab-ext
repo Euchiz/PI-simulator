@@ -77,7 +77,7 @@ ext_list() {
     # "down" declares a healthy login-node reviewer dead whenever the lab runs on a compute node.
     LOCK="$LAB_HOME/.watch/$k.lock"; p="$(running_pid)"; h="$(lock_host)"; me="$(hostname -s)"
     if [ -n "$p" ]; then st="LIVE (pid $p)"
-    elif [ -n "$h" ] && [ "$h" != "$me" ]; then st="on $h — unverified here"
+    elif [ -n "$h" ] && [ "$h" != "$me" ]; then st="on $h (unverified)"   # ASCII: printf pads by BYTES, so a multibyte dash under-pads the column
     else st="down"; fi
     ext_has_adapter "$k" || st="$st  [no adapter]"
     note="$(awk -F'\t' -v k="$k" '$1==k{print $4; exit}' "$EXT" 2>/dev/null)"
