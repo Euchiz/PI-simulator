@@ -220,12 +220,20 @@ for k in ext_keys:
         lines.append(f"  {k}: status unavailable ({type(e).__name__})")
         flags.append(f"{k} (external reviewer): status check failed — `lab ext {k} status`")
         continue
-    live = "LIVE" in (out.splitlines()[0] if out.splitlines() else "")
+    # Three states, not two: a reviewer whose lock is held by another host is UNVERIFIABLE from
+    # here, which is not the same as down. Reporting it as DOWN cries wolf every single day, and a
+    # health check that is routinely wrong stops being read. The cross-node-valid signal is whether
+    # it is ANSWERING (the queue below), not whether we can see its pid.
+    first = out.splitlines()[0] if out.splitlines() else ""
+    m_host = re.search(r"registered on (\S+)", first)
+    state = "LIVE" if "LIVE" in first else ("REMOTE" if m_host else "DOWN")
+    live = state == "LIVE"
     def _n(pat, s=out):
         m = re.search(pat, s); return int(m.group(1)) if m else 0
     q, a, fl, rj = _n(r"(\d+) queued"), _n(r"(\d+) answered"), _n(r"(\d+) failed"), _n(r"(\d+) rejected")
-    lines.append(f"  {k}: {'LIVE' if live else 'DOWN'} · {q} queued · {a} answered · {fl} failed · {rj} rejected")
-    if not live:
+    shown = state if state != "REMOTE" else f"on {m_host.group(1)} (unverified from here)"
+    lines.append(f"  {k}: {shown} · {q} queued · {a} answered · {fl} failed · {rj} rejected")
+    if state == "DOWN":
         flags.append(f"{k} (external reviewer): daemon DOWN — keepalive should restart it; check `lab ext {k} logs`")
     if fl:
         flags.append(f"{k}: {fl} FAILED review(s) — check `lab ext {k} logs`")

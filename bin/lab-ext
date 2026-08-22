@@ -72,11 +72,16 @@ ext_list() {
   fi
   while read -r k; do
     [ -n "$k" ] || continue
-    LOCK="$LAB_HOME/.watch/$k.lock"; p="$(running_pid)"; st="down"
-    [ -n "$p" ] && st="LIVE (pid $p)"
+    # Liveness has THREE states, not two. `running_pid` is empty both when the daemon is dead and
+    # when the lock belongs to another host, whose /proc we cannot read -- collapsing those to
+    # "down" declares a healthy login-node reviewer dead whenever the lab runs on a compute node.
+    LOCK="$LAB_HOME/.watch/$k.lock"; p="$(running_pid)"; h="$(lock_host)"; me="$(hostname -s)"
+    if [ -n "$p" ]; then st="LIVE (pid $p)"
+    elif [ -n "$h" ] && [ "$h" != "$me" ]; then st="on $h — unverified here"
+    else st="down"; fi
     ext_has_adapter "$k" || st="$st  [no adapter]"
     note="$(awk -F'\t' -v k="$k" '$1==k{print $4; exit}' "$EXT" 2>/dev/null)"
-    printf "  %-12s %-22s %s\n" "$k" "$st" "${note:-}"; n=$((n+1))
+    printf "  %-12s %-36s %s\n" "$k" "$st" "${note:-}"; n=$((n+1))
   done <<EOF
 $keys
 EOF
