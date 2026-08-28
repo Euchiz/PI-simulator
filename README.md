@@ -164,8 +164,8 @@ If your agents run on an HPC login node, they will eventually take it down. Long
 you *and* everyone else on it.
 
 **Compute-node mode** runs the whole lab inside a scheduler allocation, and rotates it automatically
-when that allocation expires. **It is experimental** — a full unattended rotation has not been
-observed end to end yet, so supervise it rather than trusting it overnight:
+when that allocation expires. **It is experimental** — the first live rotation completed but
+surfaced bugs since fixed, so supervise it rather than trusting it overnight:
 
 ```bash
 lab node start                        # submit the host job (cores/memory/walltime from lab.env)

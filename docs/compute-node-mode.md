@@ -1,13 +1,14 @@
 # Compute-node mode
 
-> ⚠️ **Experimental.** Everything here runs, but the piece that matters most — a full automatic
-> rotation from one allocation to the next, unattended — has not yet been observed end to end. It is
-> being exercised on a live lab now. Until a rotation has completed on its own, treat this as
-> something to supervise, keep the pre-migration transcripts, and expect to intervene.
+> ⚠️ **Experimental.** The first full rotation has now run end to end on a live lab: the successor
+> was submitted at the warning, eight sessions drained, and the handoff completed. It also surfaced
+> three bugs, one of which stranded a session on the dying node — all fixed in v0.6.3. Supervise your
+> first rotation rather than trusting it overnight, and keep the pre-migration transcripts. They are
+> backed up automatically, and they are what made that session recoverable.
 >
-> Verified so far: a hand-run migration (drain → move → aftercheck), and sessions surviving a
-> disconnect. Not yet verified: the unattended handoff at the walltime boundary, and the host job
-> starting the agent daemon (that path first runs at the next rotation).
+> Verified: the unattended handoff at the walltime boundary, the host job starting the agent daemon
+> in the batch step, and sessions surviving a disconnect. Not yet verified: a rotation running clean
+> with these fixes in place — that happens at the next one.
 
 Run the lab inside a scheduler allocation instead of on a login node, and rotate it automatically
 when that allocation ends.
