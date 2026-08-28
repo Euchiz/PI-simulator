@@ -295,13 +295,33 @@ def cmd_close(a):
 
 def cmd_force(a):
     mid = a.id or current_mid() or die("no open migration")
-    targets = [r for r in read_all(mid) if r.get("status")=="pending"]
-    if a.agent: targets = [r for r in targets if pkey(r.get("agent"))==pkey(a.agent)]
-    if not targets: print("nothing pending to force"); return 0
-    for r in targets:
+    rows = read_all(mid)
+    if a.agent: rows = [r for r in rows if pkey(r.get("agent"))==pkey(a.agent)]
+    # A registry status is BOOKKEEPING; it is not a stopped process. A session can register CLOSED
+    # ("idle, nothing to wrap up") and keep running — and then `move` refuses it for being alive, so
+    # it never migrates and dies with the node instead. Relabelling pending rows kept the LOOP from
+    # blocking but left the processes up, which is the half of the deadline that actually matters.
+    # So force acts on whatever is still LIVE, whatever the registry says about it.
+    live = live_session_ids()
+    pending    = [r for r in rows if r.get("status") == "pending"]
+    still_live = [r for r in rows if r.get("short_id") in live]
+    for r in pending:
         write_status(mid, r["agent"], status="forced", by="force",
                      note=a.reason or "deadline reached; forced so the loop does not block")
         print(f"  FORCED {r['agent']} — uncommitted work in that session may be lost")
+    for r in still_live:
+        sid = r.get("short_id")
+        print(f"  STOPPING {r['agent']} ({sid}) — still running at the deadline")
+        try: subprocess.run(["claude","stop",sid], capture_output=True, text=True, timeout=120)
+        except Exception as e: print(f"    stop failed: {type(e).__name__}")
+    if still_live:
+        # Gate on the OUTCOME, not on stop's exit code: report anything that ignored it, because a
+        # survivor is exactly what strands a session at move time.
+        left = live_session_ids()
+        survivors = [r["agent"] for r in still_live if r.get("short_id") in left]
+        print(f"  still running after stop: {', '.join(survivors) if survivors else 'none'}")
+    if not pending and not still_live:
+        print("nothing pending to force, and no session still running")
     return cmd_status(argparse.Namespace(id=mid))
 
 
@@ -327,27 +347,31 @@ def old_is_dead(rec, man):
     a real agent's lab identity. Only positive evidence counts: Slurm says the job is gone, or the
     old host itself stamped the session.
     """
-    # 1. Claude Code's own live-session listing is decisive and works across nodes
-    sid = rec.get("short_id")
-    if sid in live_session_ids():
-        return False, "still listed as a LIVE session (stop it first)"
-    return True, "no longer listed as a live session — it has been stopped"
-    # 2. Slurm is authoritative for a job-hosted old node
+    # 1. Slurm OUTRANKS the session listing for a job-hosted old node. If the job is gone the node
+    #    is gone, and nothing that ran on it can still be alive. The listing keeps showing a GHOST
+    #    entry for a session whose host died (observed: state=blocked, updatedAt=None, hours after
+    #    the node was reclaimed) — a listing cannot see across a dead host, which is the same blind
+    #    spot as /proc. This tier used to sit BELOW the listing and behind an unconditional return,
+    #    so it never ran: `move` refused a session as "LIVE" on the strength of a ghost, it never
+    #    migrated, and it died with the node.
     job = man.get("old_job")
     if job:
         r = subprocess.run(["squeue","-h","-j",str(job),"-o","%T"], capture_output=True, text=True, timeout=60)
         st = (r.stdout or "").strip()
         if r.returncode != 0 or not st:
-            return True, f"old job {job} is no longer in the queue"
-        return False, f"old job {job} is still {st} — its sessions are still alive"
+            return True, f"old job {job} is no longer in the queue — its node is gone"
+        # job still RUNNING: it says nothing about THIS session, so fall through to the listing.
+    # 2. Claude Code's own live-session listing, which works across nodes while the old host lives
+    sid = rec.get("short_id")
+    if sid in live_session_ids():
+        return False, "still listed as a LIVE session (stop it first)"
     # 3. a stamp written ON the old host by `lab migrate verify-dead`
     if rec.get("process_gone") is True:
         return True, f"verified gone on {rec.get('verified_on','the old node')} at {rec.get('verified_at','?')}"
     if rec.get("process_gone") is False:
         return False, f"still running on {rec.get('verified_on','the old node')} as pid {rec.get('old_pid')}"
-    # 4. absence proves nothing
-    return None, ("unverified — not running HERE, but that is not proof it is dead (it may be on "
-                  "another host). Run `lab migrate verify-dead` ON THE OLD NODE, or --allow-live-old")
+    # 4. not listed and no contrary stamp — it has been stopped
+    return True, "no longer listed as a live session — it has been stopped"
 
 def backup(mid, rec):
     d = os.path.join(mig_dir(mid), "backup"); os.makedirs(d, exist_ok=True)
