@@ -483,11 +483,26 @@ def cmd_aftercheck(a):
     # --all ALWAYS lists the pre-migration sessions (a stopped session persists there reporting
     # state 'done', identical to an idle live one), so name-matching flagged all 7 as duplicated
     # when none were. Only an OLD id that is still actively WORKING is a real conflict.
-    dupes = [r for r in moved if r.get("short_id") in live]
+    # A GHOST in the listing is not a duplicate. If the old JOB is gone then its node is gone, so no
+    # pre-migration session can still be running, whatever the listing says — it keeps a stale entry
+    # for a session whose host died (state=blocked, updatedAt=None, hours later). Slurm settles it,
+    # the same way it does in old_is_dead. This is not merely a cosmetic warning: `dupes` also gates
+    # --finalise below, so one ghost would keep the migration open forever and the next rotation
+    # would find a stale migration still current.
+    old_job = manifest(mid).get("old_job")
+    old_node_gone = False
+    if old_job:
+        r = subprocess.run(["squeue","-h","-j",str(old_job),"-o","%T"],
+                           capture_output=True, text=True, timeout=60)
+        old_node_gone = (r.returncode != 0 or not (r.stdout or "").strip())
+    dupes = [] if old_node_gone else [r for r in moved if r.get("short_id") in live]
     if dupes:
         print("\n  ⚠⚠ SAME LAB NAME LIVE TWICE — the pre-migration session is still running and will")
         print("     consume this one's inbox. Close it:")
         for r in dupes: print(f"      claude stop {r['short_id']}      # old {r['agent']}")
+    elif old_node_gone:
+        print(f"\n  ✓ no duplicates possible — old job {old_job} is gone, so its node took every")
+        print("    pre-migration process with it (any old id still listed is a stale entry)")
     else:
         print("\n  ✓ no pre-migration session is still running (old ids stay listed under")
         print("    `claude agents --all`, which includes stopped sessions — that is expected)")
