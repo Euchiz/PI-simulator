@@ -63,15 +63,18 @@ blackboard (Claude coding sessions sharing it) and the compute NODE it all runs 
 Below is today's machine-gathered data. Decide whether anything is genuinely worth
 pulling attention to. Be conservative: a session freshly "working" or cleanly "done"
 is fine and needs no flag.
-Worth flagging (coordination): a session marked working but untouched >24h (possibly
-stalled), blocked/failed/errored states that look stuck, a session waiting on a message
-that isn't coming, unread inbox backlog, or board items aging unresolved.
+This is a HEALTH check, not a work-status report. What a session is working on, what it is
+parked waiting to be told, and which tasks are open or unclaimed are the reader's OWN plan:
+he set it and already knows, having been the one asked. Reporting it back is noise, and noise
+trains him to stop reading these. NEVER flag a session for being blocked, idle, or awaiting
+his go-ahead, and never flag a task for being open, unclaimed, or untouched. Flag a fault,
+never a decision that is his to make.
+Worth flagging (coordination): a session in a failed or errored state, a session marked
+working but untouched >24h (hung rather than parked), an unread inbox backlog meaning
+coordination is not being picked up, or board items aging unresolved.
 A `lab note` / board broadcast is an ANNOUNCEMENT, not an outstanding ask — never read a
-session as "blocked waiting on a reply" because it posted a finding to the board. Infer
-"waiting on a reply" ONLY from an actual unanswered DIRECT message (an ask sent to a
-specific inbox), never from a blocked state alone: a session frequently reads as "blocked"
-just because its turn ended, not because it is stuck. When a block's cause is unclear,
-phrase it as "verify whether X is really blocked", not as a definite waiting-on-reply.
+session as "waiting on a reply" because it posted a finding to the board. Infer "waiting on
+a reply" ONLY from an actual unanswered DIRECT message sent to a specific inbox.
 Worth flagging (node/compute): a disk over ~90% full or nearly out of free space,
 sustained load far above the core count, memory near exhaustion, a GPU error, or an
 external-reviewer daemon that is DOWN.

@@ -98,8 +98,11 @@ for key in reg_keys:
     detail = (((d.get("output") or {}).get("result")) or d.get("detail") or "")[:140]
     tag = "OK"
     if state in ("blocked", "failed", "error"):
-        if state == "blocked" and key in OPERATORS:
-            tag = "OPS"   # operator idle-between-events; not a real block, and no self-alert
+        if state == "blocked":
+            # An agent parked awaiting a decision is WORK STATUS, not a health problem: it is the
+            # intended state and the PI already knows, having been asked. Only genuine failures
+            # escalate. The row stays in the snapshot below, so it is visible without being an alert.
+            tag = "OPS" if key in OPERATORS else "WAIT"
         else:
             tag = state.upper(); flags.append(f"{key}: state={state} — {detail}")
     elif state == "working" and a is not None and a > STALE_WORKING_H:
@@ -108,7 +111,7 @@ for key in reg_keys:
         else:
             tag = "STALE"; flags.append(f"{key}: marked working but untouched {fmt_age(a)} — possibly stalled")
     elif queued and (a is not None and a > STALE_WORKING_H):
-        tag = "STUCK?"; flags.append(f"{key}: {queued} queued tasks, idle {fmt_age(a)}")
+        tag = "STUCK?"   # work status: visible in the snapshot, not escalated
     lines.append(f"[{tag}] {key:<18} state={state:<8} upd {fmt_age(a):>4} ago — {detail}")
 
 # --- inbox backlog ---
@@ -176,22 +179,11 @@ else:
         taken  = [r for r in rows if r["status"] == "taken"]
         failed = [r for r in rows if r["status"] == "failed"]
         lines.append(f"  {len(openr)} unclaimed · {len(taken)} in progress · {len(failed)} failed · {len(rows)} total")
-        def age_days(r):
-            try: return (now() - datetime.fromisoformat(r["updated"]).replace(tzinfo=timezone.utc)).days
-            except Exception: return 0
-        for r in openr:
-            d = age_days(r)
-            if d > TASK_STALE_D:
-                sug = pkey(r["suggested"] or "")
-                if sug and sug in ACCEPT_PAUSED:
-                    continue   # only tagged owner is a paused (idle-by-design) session — parked, not neglected
-                flags.append(f"task #{r['id']} unclaimed {d}d — '{r['title'][:60]}' (tagged: {r['suggested'] or 'nobody'})")
-        for r in taken:
-            d = age_days(r)
-            if d > TASK_STALE_D:
-                flags.append(f"task #{r['id']} taken by {r['taken_by']} but untouched {d}d — '{r['title'][:60]}'")
-        for r in failed:
-            flags.append(f"task #{r['id']} FAILED — '{r['title'][:60]}': {(r['note'] or '')[:60]}")
+        # TASK STATE IS NEVER A HEALTH FLAG. An open task is the backlog the PI set; a failed one
+        # is a decision someone recorded with a reason, and `lab task fail` already notified the
+        # creator at that moment. Re-raising either every morning is noise, and noise is what makes
+        # a health check stop being read. Counts and a sample stay in the snapshot below; the task
+        # DB has its own reporting (`lab task`) for anyone who wants the list.
         for r in openr[:5] + taken[:5]:
             lines.append(f"  #{r['id']} [{r['status']}] {r['title'][:70]}")
     except Exception as e:
