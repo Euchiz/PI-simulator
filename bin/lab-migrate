@@ -458,6 +458,39 @@ def cmd_move(a):
     print(f"\n  moved {ok}, failed {fail}.  Next: `lab migrate aftercheck`")
     return 0 if fail == 0 else 2
 
+def archive_old_jobs(mid, moved):
+    """Move each pre-migration job dir out of the agents view, once the migration is finalised.
+
+    A migrated session leaves its old job dir behind, so the agents view shows every old session
+    alongside its replacement under the SAME NAME — two "Manager" rows, one of them dead. That is
+    easy to misclick into, and clicking the dead one looks like the agent has amnesia.
+
+    MOVED, NEVER DELETED. These dirs hold `timeline.jsonl` and a `tmp/` that can be large (120 MB in
+    one case here) and they are the only record of what that session had on disk. It is a rename
+    inside one filesystem, so it costs nothing and is trivially undone with `mv`. Transcripts live in
+    ~/.claude/projects and are not touched.
+    """
+    dest_root = os.path.join(HOME, ".claude", "jobs-archive", mid)
+    done, failed = [], []
+    for r in moved:
+        sid = r.get("short_id")
+        if not sid: continue
+        src = os.path.join(HOME, ".claude", "jobs", str(sid))
+        if not os.path.isdir(src): continue
+        try:
+            os.makedirs(dest_root, exist_ok=True)
+            os.rename(src, os.path.join(dest_root, str(sid)))
+            done.append(f"{r.get('agent','?')}/{sid}")
+        except OSError as e:
+            failed.append(f"{sid} ({type(e).__name__})")
+    if done:
+        print(f"  archived {len(done)} old job dir(s) out of the agents view -> {dest_root}")
+        print(f"    {', '.join(done)}")
+        print("    nothing deleted; restore any of them with `mv`")
+    if failed:
+        print(f"  could NOT archive: {', '.join(failed)} — they stay in the agents view")
+    return len(done)
+
 def cmd_aftercheck(a):
     mid = a.id or current_mid() or die("no open migration")
     recs = read_all(mid)
@@ -510,6 +543,10 @@ def cmd_aftercheck(a):
         m = manifest(mid); m["finalised"] = now()
         json.dump(m, open(os.path.join(mig_dir(mid),"manifest.json"),"w"), indent=2)
         print("  migration finalised")
+        # Only here: finalised means moved cleanly, no errors, no duplicates — so the old dirs are
+        # provably redundant. Doing it earlier could hide a session that still needed rescuing.
+        if not a.no_archive:
+            archive_old_jobs(mid, moved)
     print(f"\n  The lab is on {os.uname().nodename}. Run `claude agents` here, then `/lab-setup`")
     print(f"  in each session before using it. Backups: {os.path.join(mig_dir(mid),'backup')}")
     return 0 if not (errs or dupes) else 2
@@ -623,7 +660,10 @@ def main():
                     help="do NOT auto-run lab-setup in each resumed session (default: run it)")
     mv.set_defaults(fn=cmd_move)
     ac = sub.add_parser("aftercheck", help="verify the move and report what needs attention")
-    ac.add_argument("--id"); ac.add_argument("--finalise", action="store_true"); ac.set_defaults(fn=cmd_aftercheck)
+    ac.add_argument("--id"); ac.add_argument("--finalise", action="store_true")
+    ac.add_argument("--no-archive", action="store_true",
+                    help="with --finalise, leave the pre-migration job dirs in the agents view")
+    ac.set_defaults(fn=cmd_aftercheck)
     vd = sub.add_parser("verify-dead", help="ON THE OLD NODE: stamp which session processes are gone")
     vd.add_argument("--id"); vd.set_defaults(fn=cmd_verify_dead)
     dp = sub.add_parser("depart", help="ON THE OLD NODE: open, drain, stop, verify, hand off — one command")
