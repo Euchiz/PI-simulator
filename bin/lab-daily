@@ -67,8 +67,10 @@ This is a HEALTH check, not a work-status report. What a session is working on, 
 parked waiting to be told, and which tasks are open or unclaimed are the reader's OWN plan:
 he set it and already knows, having been the one asked. Reporting it back is noise, and noise
 trains him to stop reading these. NEVER flag a session for being blocked, idle, or awaiting
-his go-ahead, and never flag a task for being open, unclaimed, or untouched. Flag a fault,
-never a decision that is his to make.
+his go-ahead, and never flag a task for its STATE — open, unclaimed, untouched and FAILED
+alike. A failed task is a decision someone recorded with a reason, and `lab task fail` notified
+its creator at that moment; the counts below are context, never something to raise. Flag a
+fault, never a decision that is his to make.
 Worth flagging (coordination): a session in a failed or errored state, a session marked
 working but untouched >24h (hung rather than parked), an unread inbox backlog meaning
 coordination is not being picked up, or board items aging unresolved.
