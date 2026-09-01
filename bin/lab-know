@@ -1080,7 +1080,26 @@ def build_parser():
     al.add_argument("--card"); al.add_argument("--no-card", dest="no_card")   # 'no card, no holds' gate
     al.set_defaults(fn=cmd_aim_log)
     aln = ams.add_parser("link"); aln.add_argument("claim_id"); aln.add_argument("aim_id"); aln.set_defaults(fn=cmd_aim_link)
-    apr = ams.add_parser("propose"); apr.add_argument("op", choices=list(AIM_OPS)); apr.add_argument("id")
+    apr = ams.add_parser("propose", formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Propose a change to the aims tree. Nothing is applied until it is approved.",
+        epilog="""THE id IS THE NODE THE OPERATION ACTS ON.
+
+For add-node that is the NEW node's id, NOT its parent's. The parent is implied by the id
+itself -- a node's parent is its id with the last segment removed -- so you never name it:
+
+    lab aim propose add-node 1.1.5 --title "..." --rationale "..."     # creates 1.1.5 UNDER 1.1
+    lab aim propose add-node 1.1   --title "..." --rationale "..."     # WRONG: OVERWRITES 1.1
+
+Passing the parent's id does not create a child. add-node writes the row for the id you give
+it, so an existing node at that id is REPLACED: its title and note become the ones you passed
+and its verdict resets to 'proposed'. Check `lab aim tree` for a free id first.
+
+For every other op the id is an EXISTING node: set-verdict, retitle, note, retire-node.""")
+    apr.add_argument("op", choices=list(AIM_OPS),
+                     help="add-node (create) | set-verdict | retitle | note | retire-node")
+    apr.add_argument("id", help="for add-node: the NEW node's id (its parent is implied, e.g. 1.1.5 "
+                                "lands under 1.1) -- passing a parent id OVERWRITES that node. "
+                                "For every other op: an existing node's id.")
     apr.add_argument("--title"); apr.add_argument("--verdict"); apr.add_argument("--why"); apr.add_argument("--note")
     apr.add_argument("--rationale", required=True); apr.set_defaults(fn=cmd_aim_propose)
     ams.add_parser("pending").set_defaults(fn=cmd_aim_pending)
