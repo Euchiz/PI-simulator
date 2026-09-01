@@ -208,6 +208,8 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
                 lab know app [--fragment] · lab know export     (the long forms)
   ANNOUNCE      lab note · board · status · digest · health
   NODE          lab node start|status|enter|rotate|stop  the allocation the lab runs inside
+  REFRESH       lab refresh --all           restart sessions onto a NEW Claude Code build
+                lab refresh <name> …        (a running process cannot swap its own binary)
   MIGRATE       lab migrate depart          (on the OLD node: one command to move out)
                 lab migrate start|precheck|status|close|force|verify-dead|move|aftercheck
   ADMIN         lab setup [name] · init · register · manager · technician · projects · name · whoami · ext
@@ -576,6 +578,7 @@ case "$cmd" in
   map)       exec python3 "$SELF/lab-know" map "$@";;   # one-word knowledge-map refresh
   migrate)   exec python3 "$SELF/lab-migrate" "$@";;    # drain + re-attach sessions across nodes
   node)      exec bash "$SELF/lab-node" "$@";;          # the allocation the lab runs inside
+  refresh)   exec bash "$SELF/lab-agents-refresh" "$@";; # restart sessions onto a new CLI build
   know)      exec python3 "$SELF/lab-know" "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
   ext)       exec bash "$SELF/lab-ext" "$@";;
