@@ -435,6 +435,11 @@ def cmd_move(a):
             write_status(mid, agent, move_error=why); fail += 1; continue
         b = backup(mid, r)                                   # §5.0 — back up BEFORE touching anything
         cwd = r.get("cwd") if r.get("cwd") and os.path.isdir(r.get("cwd")) else os.getcwd()
+        # The flags are deliberate and must stay. Passing --bg/--remote-control/--name to a session
+        # that ALREADY has a live record forks a copy instead of continuing it -- which is why
+        # `lab agents-refresh` must not use them. Here it is the opposite case and the copy is the
+        # point: the transcript's process died with the old node, and a NEW record on this node is
+        # exactly what a migration wants, recorded as moved_to. Do not "fix" this to match refresh.
         cmd = ["claude","--bg","--remote-control","--resume",sid,"--name",agent]
         if not a.no_setup:
             # Re-attach the session to the lab on arrival: identity, inbox, and — the part no shell

@@ -6,17 +6,23 @@
 # side effect, but waiting days for it is not the point when you updated deliberately.
 #
 #   lab-agents-refresh technician poreior     # named sessions
-#   lab-agents-refresh --all                  # every session
+#   lab-agents-refresh --all                  # every LIVE session
+#   lab-agents-refresh --all --include-dead   # also revive sessions whose process is gone
 #   lab-agents-refresh --all --dry-run        # show what would happen
+#
+# --include-dead is for recovery: a session that was killed (a host-job fault, a daemon restart
+# storm) leaves a record and a transcript but no process, and neither `move` (it is already marked
+# moved) nor a plain refresh (it is not live) will bring it back. It never revives a record whose
+# name a live session already holds.
 #
 # Resume keeps the transcript, so nothing is lost but in-memory working context. --name preserves the
 # lab identity (inbox, roster, history), which is how `lab migrate move` does it.
 set -uo pipefail
 JOBS="$HOME/.claude/jobs"
-DRY=0; ALL=0; WANT=()
+DRY=0; ALL=0; DEAD=0; WANT=()
 for a in "$@"; do
   case "$a" in
-    --dry-run) DRY=1;; --all) ALL=1;; -h|--help) sed -n '2,14p' "$0"; exit 0;;
+    --dry-run) DRY=1;; --all) ALL=1;; --include-dead) DEAD=1;; -h|--help) sed -n '2,16p' "$0"; exit 0;;
     *) WANT+=("$(echo "$a" | tr 'A-Z' 'a-z')");;
   esac
 done
@@ -29,10 +35,27 @@ live_ids() { timeout 60 claude agents --json 2>/dev/null | python3 -c \
 # `lab migrate aftercheck --finalise` archives them). Resuming one would start a SECOND session under
 # a lab name that already has an owner, and the two then eat each other's inbox. So the live listing,
 # not the filesystem, decides what is eligible.
+SETUP_PROMPT="This session was just restarted. Run the lab-setup skill now: repair this session's lab identity, consume its inbox, ARM the live message watcher, and self-check the lab wiring. Then report the state in a few lines and STOP — do not resume any previous work and do not start anything new until asked."
+
+n_husk=0
 LIVE=" $(live_ids) "
+# Names already held by a LIVE session: never resume a second record for one of these, or the two
+# fight over one inbox. This is the guard that matters once --include-dead is in play.
+CLAIMED=""
+for d0 in "$JOBS"/*/; do
+  s0=$(basename "$d0"); [ -f "$d0/state.json" ] || continue
+  case "$LIVE" in *" $s0 "*) CLAIMED="$CLAIMED $(python3 -c "
+import json;print((json.load(open('$d0/state.json')).get('name') or '').lower())" 2>/dev/null)";; esac
+done
+
 for d in "$JOBS"/*/; do
-  sid=$(basename "$d"); [ -f "$d/state.json" ] || continue
-  case "$LIVE" in *" $sid "*) ;; *) continue;; esac
+  sid=$(basename "$d")
+  # A husk with no state.json has no name and no transcript pointer -- nothing to resume from.
+  # Counted rather than passed over in silence: "nothing was dead" and "I could not read it" must
+  # not look the same to the caller.
+  if [ ! -f "$d/state.json" ]; then n_husk=$(( n_husk + 1 )); continue; fi
+  islive=0; case "$LIVE" in *" $sid "*) islive=1;; esac
+  if [ "$islive" = 0 ] && [ "$DEAD" != 1 ]; then continue; fi
   read -r name full < <(python3 -c "
 import json;d=json.load(open('$d/state.json'));print(d.get('name') or '?', d.get('sessionId') or '')" 2>/dev/null)
   [ -n "$full" ] || continue
@@ -43,19 +66,48 @@ import json;d=json.load(open('$d/state.json'));print(d.get('name') or '?', d.get
   fi
   # No "currently on <version>" column: a session's worker process is not identifiable from its
   # cmdline, and the lookup printed the wrong process. A wrong value is worse than no value.
-  echo "== $name ($sid)"
-  if [ "$DRY" = 1 ]; then echo "   would: stop, verify stopped, resume under '$name'"; continue; fi
+  if [ "$islive" = 1 ]; then state_word="live"; else state_word="DOWN"; fi
+  echo "== $name ($sid, $state_word)"
 
-  claude stop "$sid" >/dev/null 2>&1
-  # GATE ON THE OUTCOME, not on stop's exit code: resuming while the old process lives gives two
-  # sessions the same lab name, and they consume each other's inbox.
-  gone=0
-  for _ in $(seq 1 20); do
-    case " $(live_ids) " in *" $sid "*) sleep 3;; *) gone=1; break;; esac
-  done
-  if [ "$gone" != 1 ]; then echo "   STILL LISTED after 60s — skipped, not resuming a duplicate"; continue; fi
+  # A DOWN record whose name a LIVE session already holds is a stale duplicate, not something to
+  # revive: resuming it would put two records on one inbox. Skip it and say why.
+  if [ "$islive" = 0 ]; then
+    case " $CLAIMED " in
+      *" $lname "*) echo "   skipped — '$name' is already held by a live session"; continue;;
+    esac
+  fi
 
-  claude --bg --remote-control --resume "$full" --name "$name" \
-    "This session was just restarted to pick up a new Claude Code version. Run the lab-setup skill now: repair this session's lab identity, consume its inbox, ARM the live message watcher, and self-check the lab wiring. Then report the state in a few lines and STOP — do not resume any previous work and do not start anything new until asked." \
-    >/dev/null 2>&1 && echo "   restarted" || echo "   RESUME FAILED — transcript is intact: $full"
+  if [ "$DRY" = 1 ]; then
+    if [ "$islive" = 1 ]; then echo "   would: stop, verify stopped, resume (same id)"
+    else echo "   would: resume from transcript (already down, no stop needed)"; fi
+    continue
+  fi
+
+  if [ "$islive" = 1 ]; then
+    claude stop "$sid" >/dev/null 2>&1
+    # GATE ON THE OUTCOME, not on stop's exit code: resuming while the old process lives gives two
+    # sessions the same lab name, and they consume each other's inbox.
+    gone=0
+    for _ in $(seq 1 20); do
+      case " $(live_ids) " in *" $sid "*) sleep 3;; *) gone=1; break;; esac
+    done
+    if [ "$gone" != 1 ]; then echo "   STILL LISTED after 60s — skipped, not resuming a duplicate"; continue; fi
+  fi
+
+  # NO FLAGS. A background session keeps its own saved options (--bg, --remote-control, --name), and
+  # passing them again does not continue it -- it FORKS A COPY under a new id, leaving the original
+  # as a ghost and two records claiming one lab name, which then eat each other's inbox. The CLI says
+  # so itself: "background session <id> keeps its own saved options, so the flags you passed started
+  # a copy". Bare `--resume <id>` continues the session; it needs a PROMPT, because a session that
+  # ended cleanly has no deferred tool call to pick up ("No deferred tool marker found").
+  #
+  # `lab migrate move` passes those flags deliberately and correctly: it resumes onto a node where no
+  # live process exists for that transcript and a NEW record is what it wants. Same flags, opposite
+  # meaning, decided entirely by whether a live record already exists. Do not unify them.
+  claude --resume "$full" "$SETUP_PROMPT" >/dev/null 2>&1 \
+    && echo "   restarted (same id $sid)" \
+    || echo "   RESUME FAILED — transcript is intact: $full"
 done
+
+[ "$n_husk" -gt 0 ] && echo "($n_husk job record(s) skipped: no state.json, nothing to resume from)"
+exit 0
