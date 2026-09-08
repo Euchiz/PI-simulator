@@ -102,15 +102,24 @@ ext_setup() {
   # this agent's own settings file — per-agent values beat the global lab.env
   if [ ! -f "$pkg/agent.env" ]; then
     cat > "$pkg/agent.env" <<AENV
-# Settings for the '$key' external agent only. Sourced after \$LAB_HOME/lab.env, so these
-# win over the global values; a variable set on the command line still wins over both.
+# Settings for the '$key' external agent only. Sourced AFTER \$LAB_HOME/lab.env, so the FORM you
+# use decides whether this file wins:
+#
+#   VAR=value           OVERRIDE — always wins, including over a value set in lab.env
+#   : "\${VAR:=value}"   DEFAULT  — fills the gap only if nothing has set VAR already
+#
+# The := form CANNOT override lab.env. lab.env is sourced first, so the variable is already set and
+# := does nothing at all — silently. Use a plain assignment for anything lab.env also sets, which is
+# the whole point of a per-agent file. := only leaves room for a command-line override if lab.env
+# does not set the same variable with a plain assignment — a plain assignment there beats the
+# command line too.
 # Uncomment what you need — every one of them has a working default.
-#: "\${LAB_EXT_CD:=/path/to/the/repo/it/reviews}"   # working root (default: \$PWD)
-#: "\${LAB_EXT_WORK:=/path/to/scratch/$key}"        # scratch; move OFF \$HOME if transcripts grow
-#: "\${LAB_EXT_TIMEOUT:=900}"                       # seconds per request
-#: "\${LAB_EXT_INTERVAL:=30}"                       # inbox poll seconds
-#: "\${LAB_EXT_BACKOFF:=900}"                       # sleep after a rate limit
-# Tool settings belong here too, e.g.:  #: "\${MY_CLI_MODEL:=fast}"
+#LAB_EXT_CD=/path/to/the/repo/it/reviews    # working root (default: \$PWD)
+#LAB_EXT_WORK=/path/to/scratch/$key         # scratch; move OFF \$HOME if transcripts grow
+#LAB_EXT_TIMEOUT=900                        # seconds per request
+#LAB_EXT_INTERVAL=30                        # inbox poll seconds
+#LAB_EXT_BACKOFF=900                        # sleep after a rate limit
+# Tool settings belong here too, e.g.:  #MY_CLI_MODEL=gpt-6-astra
 AENV
     echo "lab ext: created $pkg/agent.env"
   fi

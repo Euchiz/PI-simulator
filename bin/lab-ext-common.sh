@@ -13,9 +13,21 @@
 #       work/        scratch prompts/outputs — redirect to real scratch with
 #                    LAB_EXT_WORK inside agent.env if transcripts get large
 #
-# Settings precedence:  command line  >  ext/<agent>/agent.env  >  $LAB_HOME/lab.env  >  defaults
-# (agent.env is scaffolded using  : "${VAR:=value}"  so a var already set on the command line
-#  still wins, while the per-agent value still beats the global one.)
+# Settings precedence is decided by the FORM used in EACH file, not by file order alone. Both are
+# sourced with `set -a`; $LAB_HOME/lab.env first, then ext/<agent>/agent.env:
+#
+#   VAR=value          OVERRIDES whatever is already set — including a value from the command line
+#   : "${VAR:=value}"  fills the gap only if nothing has set VAR yet
+#
+# Consequences worth knowing, all verified rather than assumed:
+#   - a plain assignment in lab.env beats the command line, AND makes a := in agent.env a no-op
+#   - for a per-agent OVERRIDE, use a plain assignment in agent.env (it is sourced last)
+#   - for something a caller can override on the command line, use := in BOTH files
+#
+# lab.env itself is mixed: LAB_HOST_* use the := style, LAB_CODEX_MODEL was a plain assignment. An earlier version of this comment claimed the
+# per-agent file always beat the global one, which is false for every variable lab.env sets: the
+# := is a silent no-op there. That cost a real misconfiguration -- the codex reviewer kept running
+# a model pinned in lab.env while a per-agent override sat in agent.env doing nothing.
 #
 # The lock deliberately stays at $LAB_HOME/.watch/<agent>.lock — `lab who` reads that
 # directory to decide whether a peer is LIVE, and that contract is shared with `lab watch`.
