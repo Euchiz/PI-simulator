@@ -207,13 +207,24 @@ def cmd_tick(a):
             tier = None
             if todo:
                 tier = min(todo)
-            elif d < 0 and "overdue" not in fired:
-                tier = "overdue"
+            elif d < 0:
+                # OVERDUE REPEATS WEEKLY FOR A DEADLINE, once only for anything else. Not because
+                # nagging helps a date that is already gone, but because a repeat forces a
+                # DISPOSITION: act on it, or run done/drop. Fired once and then silent, a blown
+                # entry sits open forever and is indistinguishable from a healthy one. Keyed by
+                # overdue WEEK so the repeat is weekly rather than daily -- constraint 4 intact.
+                wk = (-d) // 7
+                key = f"overdue:{wk}" if r["kind"] == "deadline" else "overdue"
+                if key not in fired: tier = key
             if tier is None: continue
             tag, phrase = urgency(d)
             when = r["on_date"] + (f" {r['at_time']}" if r["at_time"] else "") + (f" {r['tz']}" if r["tz"] else "")
             subj = f"[{tag}] {r['title'][:70]} — {when}"
+            overdue_ask = ("\nThis entry is PAST and still open. Either act on it, or close it so it stops\n"
+                           "asking: `lab cal done %d` (handled) or `lab cal drop %d` (no longer relevant).\n"
+                           % (r["id"], r["id"])) if d < 0 else ""
             body = (f"{r['title']}\n\n{phrase}: {when}.\n"
+                    + overdue_ask
                     + (f"\n{r['note']}\n" if r["note"] else "")
                     + f"\nThis is calendar entry #{r['id']} ({r['kind']}), owned by {r['owner'] or 'nobody'}.\n"
                     + "You will get one notice per lead tier, escalating as the date closes.\n"
@@ -222,7 +233,8 @@ def cmd_tick(a):
                 print(f"  WOULD NOTIFY {r['owner'] or '(unowned — nobody to tell)'}: {subj}")
                 continue
             ok = notify(r["owner"], subj, body) if r["owner"] else False
-            new_fired = fired | ({str(L) for L in reached} if todo else set()) | ({"overdue"} if tier == "overdue" else set())
+            new_fired = fired | ({str(L) for L in reached} if todo else set()) \
+                              | ({tier} if isinstance(tier, str) and tier.startswith("overdue") else set())
             con.execute("UPDATE cal SET fired=? WHERE id=?", (",".join(sorted(new_fired)), r["id"]))
             sent.append((r, tag, ok))
         con.commit()
