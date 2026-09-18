@@ -19,6 +19,11 @@ export PATH="$HOME/.local/bin:$SELF:/usr/local/bin:/usr/bin:/bin"
 TS="$(date +%Y-%m-%d)"
 LOG="$LAB_HOME/HEALTH.md"
 
+# Calendar first, and deliberately NOT folded into FACTS: entries route to their own OWNER, while
+# this report goes to the technician. Riding the daily job is the point (it survives node rotation,
+# and cron died with the login node) but the routing must not inherit the report's recipient.
+"$SELF/lab" cal tick >/dev/null 2>&1 || true
+
 FACTS="$(python3 "$SELF/lab-healthcheck" 2>&1)"
 
 # Node + compute facts (the technician's domain). Cheap and safe — no tree walks; each

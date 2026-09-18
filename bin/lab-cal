@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""lab-cal — dated entries the lab must not walk past.
+
+The lab was time-aware in exactly one place: the rotation's T-8h wrap-up broadcast. Everything else
+dated lived as free text in a task title or a markdown file, which renders identically on day 39 and
+day 1 and therefore never fires. This generalises the rotation pattern to arbitrary dates.
+
+Model (deliberate):
+  * AN ENTRY IS NOT A TASK. Plenty of dates are not actionable -- "MABC decisions announced" is
+    something to know, not something to do. Entries stand alone; they do not need a task.
+  * EACH ENTRY HAS AN OWNER and notices route to the OWNER, not to whoever runs the tick. Most dates
+    belong to someone other than the technician who happens to host the daily job.
+  * NOTICES ESCALATE. A lead tier fires once, and the wording sharpens as the date closes, so 39
+    days out does not read like 2 days out.
+  * SILENT OUTSIDE THE WINDOW. `tick` prints and sends nothing unless a tier is crossed today. The
+    daily check earns its attention by saying nothing when nothing is wrong; a calendar that
+    mentioned a March deadline every morning would spend that credibility within a week.
+
+SQLite at $LAB_HOME/calendar.db. NFS-safe: flock-guarded writes, rollback journal.
+"""
+import sqlite3, sys, os, re, json, fcntl, argparse, datetime, subprocess
+
+HOME = os.path.expanduser("~")
+LAB  = os.environ.get("LAB_HOME", os.path.join(HOME, "lab"))
+DB   = os.path.join(LAB, "calendar.db")
+LOCK = os.path.join(LAB, ".calendar.lock")
+
+KINDS = ("deadline", "milestone", "info")
+# Lead tiers per kind, in days before. A hard deadline deserves a long runway; a date you merely
+# want to know about does not need a month of warning.
+DEFAULT_LEADS = {"deadline": "30,14,7,3,1,0", "milestone": "14,7,3,1,0", "info": "7,1,0"}
+
+def today():   return datetime.date.today()
+def now():     return datetime.datetime.now().isoformat(timespec="seconds")
+def pkey(s):
+    return re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+
+def me():
+    jd, sid = os.environ.get("CLAUDE_JOB_DIR",""), os.environ.get("CLAUDE_CODE_SESSION_ID","")
+    for c in [os.path.join(jd,"state.json") if jd else "",
+              os.path.join(os.path.dirname(jd),"state.json") if jd else "",
+              os.path.join(HOME,".claude","jobs",sid.split("-")[0],"state.json") if sid else ""]:
+        if c and os.path.isfile(c):
+            try: return pkey(json.load(open(c)).get("name",""))
+            except Exception: pass
+    return pkey(os.environ.get("LAB_FROM","")) or "unknown"
+
+def die(msg, code=1): print(f"lab cal: {msg}", file=sys.stderr); sys.exit(code)
+
+def parse_date(s):
+    s = (s or "").strip()
+    for f in ("%Y-%m-%d", "%Y/%m/%d", "%d %b %Y", "%b %d %Y"):
+        try: return datetime.datetime.strptime(s, f).date()
+        except ValueError: pass
+    die(f"could not read date {s!r} — use YYYY-MM-DD")
+
+def connect():
+    con = sqlite3.connect(DB, timeout=30); con.row_factory = sqlite3.Row
+    con.execute("PRAGMA journal_mode=DELETE"); con.execute("PRAGMA busy_timeout=30000")
+    con.executescript("""
+    CREATE TABLE IF NOT EXISTS cal(
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      on_date TEXT NOT NULL,                 -- YYYY-MM-DD
+      at_time TEXT, tz TEXT,                 -- informational only; we never do tz math
+      owner TEXT NOT NULL DEFAULT '',        -- lab key the notices route to
+      kind TEXT NOT NULL DEFAULT 'deadline',
+      note TEXT,
+      leads TEXT NOT NULL,                   -- comma-sep days-before
+      status TEXT NOT NULL DEFAULT 'open',   -- open | done | dropped
+      fired TEXT NOT NULL DEFAULT '',        -- tiers already sent, so a tier fires ONCE
+      created TEXT, created_by TEXT,
+      closed TEXT, closed_by TEXT, close_note TEXT);
+    CREATE INDEX IF NOT EXISTS cal_open ON cal(status, on_date);
+    """)
+    return con
+
+class locked:
+    def __enter__(self):
+        os.makedirs(LAB, exist_ok=True)
+        self.f = open(LOCK, "a+"); fcntl.flock(self.f, fcntl.LOCK_EX); return self
+    def __exit__(self, *a):
+        fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+
+def notify(to, subj, body):
+    """--force because a dated entry is durable: the notice must land even if the owner is idle."""
+    to = pkey(to or "")
+    if not to: return False
+    try:
+        subprocess.run([os.path.join(LAB,"bin","lab"),"send","--force",to,subj,body],
+                       capture_output=True, text=True, timeout=25,
+                       env={**os.environ, "LAB_HOME": LAB})
+        return True
+    except Exception as e:
+        print(f"  (notice to {to} failed: {type(e).__name__})", file=sys.stderr); return False
+
+def urgency(d):
+    """Wording tier by days remaining. The point is that 39 days out must not read like 2."""
+    if d < 0:   return "OVERDUE",  "is PAST — it was due"
+    if d == 0:  return "TODAY",    "is TODAY"
+    if d == 1:  return "TOMORROW", "is TOMORROW"
+    if d <= 3:  return "URGENT",   f"is in {d} days"
+    if d <= 7:  return "SOON",     f"is in {d} days"
+    if d <= 14: return "coming up", f"is in {d} days"
+    return "heads-up", f"is in {d} days"
+
+def fmt(r, d=None):
+    if d is None: d = (parse_date(r["on_date"]) - today()).days
+    tag, _ = urgency(d)
+    when = r["on_date"] + (f" {r['at_time']}" if r["at_time"] else "") + (f" {r['tz']}" if r["tz"] else "")
+    left = f"{d}d" if d >= 0 else f"{-d}d ago"
+    own  = r["owner"] or "unowned"
+    return f"  #{r['id']:<3} {tag:<9} {left:>7}  {when:<22} {own:<12} {r['title'][:60]}"
+
+# ---------- commands ----------
+def cmd_add(a):
+    d = parse_date(a.on)
+    kind = a.kind if a.kind in KINDS else die(f"kind must be one of {KINDS}")
+    leads = a.lead or DEFAULT_LEADS[kind]
+    try: sorted({int(x) for x in leads.split(",") if x.strip() != ""}, reverse=True)
+    except ValueError: die("--lead must be comma-separated whole days, e.g. 30,14,7,1,0")
+    owner = pkey(a.owner) if a.owner else me()
+    # Warn at ADD time if the owner is not a routable lab key. The alternative is a notice that
+    # fails at T-30 with nobody watching -- the failure would land in the daily job's discarded
+    # output, so the first sign of trouble would be the date passing in silence. Warn rather than
+    # refuse: a session can be legitimately absent right now and come back before the date.
+    known = set()
+    try:
+        with open(os.path.join(LAB, ".roster.tsv")) as fh:
+            for line in fh:
+                parts = line.rstrip("\n").split("\t")
+                if len(parts) > 1 and parts[1].strip(): known.add(pkey(parts[1]))
+    except Exception: pass
+    if known and owner not in known:
+        print(f"lab cal: WARNING — '{owner}' is not in the roster, so its notices will not route.")
+        print(f"         known: {', '.join(sorted(known))}")
+    with locked():
+        con = connect()
+        cur = con.execute("""INSERT INTO cal(title,on_date,at_time,tz,owner,kind,note,leads,created,created_by)
+                             VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                          (a.title, d.isoformat(), a.at, a.tz, owner, kind, a.note or "", leads, now(), me()))
+        con.commit(); i = cur.lastrowid
+    left = (d - today()).days
+    print(f"lab cal: #{i} {a.title!r} on {d} ({left}d) -> {owner}  [{kind}, leads {leads}]")
+    if left < 0: print("  NOTE: that date is already past.")
+    return 0
+
+def cmd_list(a):
+    con = connect()
+    q = "SELECT * FROM cal WHERE 1=1"; p = []
+    if not a.all: q += " AND status='open'"
+    if a.owner:   q += " AND owner=?"; p.append(pkey(a.owner))
+    rows = con.execute(q + " ORDER BY on_date", p).fetchall()
+    if a.within is not None:
+        rows = [r for r in rows if (parse_date(r["on_date"]) - today()).days <= a.within]
+    if not rows:
+        print("lab cal: nothing scheduled" + (f" within {a.within}d" if a.within is not None else "")); return 0
+    print(f"lab cal: {len(rows)} entr{'y' if len(rows)==1 else 'ies'}   (today {today()})")
+    for r in rows:
+        line = fmt(r)
+        if r["status"] != "open": line += f"   [{r['status']}]"
+        print(line)
+    return 0
+
+def cmd_show(a):
+    con = connect(); r = con.execute("SELECT * FROM cal WHERE id=?", (a.id,)).fetchone()
+    if not r: die(f"no entry #{a.id}")
+    d = (parse_date(r["on_date"]) - today()).days
+    tag, phrase = urgency(d)
+    print(f"  #{r['id']}  {r['title']}")
+    print(f"    when     : {r['on_date']}{' '+r['at_time'] if r['at_time'] else ''}{' '+r['tz'] if r['tz'] else ''}  ({tag}, {phrase.replace('is ','')})")
+    print(f"    owner    : {r['owner'] or '(unowned)'}      kind: {r['kind']}      status: {r['status']}")
+    print(f"    leads    : {r['leads']}      already fired: {r['fired'] or '(none)'}")
+    if r["note"]: print(f"    note     : {r['note']}")
+    print(f"    created  : {r['created']} by {r['created_by']}")
+    if r["status"] != "open":
+        print(f"    closed   : {r['closed']} by {r['closed_by']}  {r['close_note'] or ''}")
+    return 0
+
+def _close(a, state):
+    with locked():
+        con = connect(); r = con.execute("SELECT * FROM cal WHERE id=?", (a.id,)).fetchone()
+        if not r: die(f"no entry #{a.id}")
+        if r["status"] != "open": die(f"#{a.id} is already {r['status']}")
+        con.execute("UPDATE cal SET status=?,closed=?,closed_by=?,close_note=? WHERE id=?",
+                    (state, now(), me(), a.note or "", a.id)); con.commit()
+    print(f"lab cal: #{a.id} {state} — {r['title'][:60]}")
+    return 0
+def cmd_done(a): return _close(a, "done")
+def cmd_drop(a): return _close(a, "dropped")
+
+def cmd_tick(a):
+    """Fire any lead tier crossed today. SILENT when nothing is due — that silence is the feature."""
+    ref = parse_date(a.today) if a.today else today()
+    sent = []
+    with locked():
+        con = connect()
+        for r in con.execute("SELECT * FROM cal WHERE status='open' ORDER BY on_date").fetchall():
+            d = (parse_date(r["on_date"]) - ref).days
+            leads = sorted({int(x) for x in r["leads"].split(",") if x.strip() != ""}, reverse=True)
+            fired = {x for x in r["fired"].split(",") if x}
+            # Tiers already reached (d <= L). Fire the SMALLEST reached tier — it describes the time
+            # remaining most accurately — and mark every larger one fired too, so an entry added late
+            # sends ONE notice at the right urgency instead of a burst of stale ones.
+            reached = [L for L in leads if d <= L]
+            todo = [L for L in reached if str(L) not in fired]
+            tier = None
+            if todo:
+                tier = min(todo)
+            elif d < 0 and "overdue" not in fired:
+                tier = "overdue"
+            if tier is None: continue
+            tag, phrase = urgency(d)
+            when = r["on_date"] + (f" {r['at_time']}" if r["at_time"] else "") + (f" {r['tz']}" if r["tz"] else "")
+            subj = f"[{tag}] {r['title'][:70]} — {when}"
+            body = (f"{r['title']}\n\n{phrase}: {when}.\n"
+                    + (f"\n{r['note']}\n" if r["note"] else "")
+                    + f"\nThis is calendar entry #{r['id']} ({r['kind']}), owned by {r['owner'] or 'nobody'}.\n"
+                    + "You will get one notice per lead tier, escalating as the date closes.\n"
+                    + f"Close it when it no longer needs tracking:  lab cal done {r['id']}\n")
+            if a.dry_run:
+                print(f"  WOULD NOTIFY {r['owner'] or '(unowned — nobody to tell)'}: {subj}")
+                continue
+            ok = notify(r["owner"], subj, body) if r["owner"] else False
+            new_fired = fired | ({str(L) for L in reached} if todo else set()) | ({"overdue"} if tier == "overdue" else set())
+            con.execute("UPDATE cal SET fired=? WHERE id=?", (",".join(sorted(new_fired)), r["id"]))
+            sent.append((r, tag, ok))
+        con.commit()
+    # Print ONLY when something fired. A quiet day must produce no output at all.
+    for r, tag, ok in sent:
+        where = f"-> {r['owner']}" if ok else (f"-> {r['owner']} (SEND FAILED)" if r["owner"] else "(UNOWNED — no notice sent)")
+        print(f"lab cal: [{tag}] #{r['id']} {r['title'][:60]} on {r['on_date']} {where}")
+    return 0
+
+def main():
+    ap = argparse.ArgumentParser(prog="lab cal", description="dated entries the lab must not walk past")
+    sub = ap.add_subparsers(dest="cmd")
+    p = sub.add_parser("add", help="add a dated entry")
+    p.add_argument("--title", required=True); p.add_argument("--on", required=True, help="YYYY-MM-DD")
+    p.add_argument("--owner", help="lab key to notify (default: you)")
+    p.add_argument("--kind", default="deadline", help=f"{'|'.join(KINDS)} (default deadline)")
+    p.add_argument("--lead", help="comma-sep days-before, e.g. 30,14,7,1,0 (default depends on --kind)")
+    p.add_argument("--note"); p.add_argument("--at", help="HH:MM, informational")
+    p.add_argument("--tz", help="timezone label, informational"); p.set_defaults(fn=cmd_add)
+    p = sub.add_parser("list", help="what is scheduled")
+    p.add_argument("--all", action="store_true", help="include done/dropped")
+    p.add_argument("--owner"); p.add_argument("--within", type=int, metavar="DAYS")
+    p.set_defaults(fn=cmd_list)
+    p = sub.add_parser("show"); p.add_argument("id", type=int); p.set_defaults(fn=cmd_show)
+    p = sub.add_parser("done"); p.add_argument("id", type=int); p.add_argument("--note"); p.set_defaults(fn=cmd_done)
+    p = sub.add_parser("drop"); p.add_argument("id", type=int); p.add_argument("--note"); p.set_defaults(fn=cmd_drop)
+    p = sub.add_parser("tick", help="fire tiers crossed today (silent otherwise); for the daily job")
+    p.add_argument("--dry-run", action="store_true"); p.add_argument("--today", help="pretend it is this date")
+    p.set_defaults(fn=cmd_tick)
+    a = ap.parse_args()
+    if not getattr(a, "fn", None): ap.print_help(); return 2
+    return a.fn(a)
+
+if __name__ == "__main__":
+    sys.exit(main() or 0)

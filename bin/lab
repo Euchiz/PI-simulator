@@ -206,6 +206,8 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
   AIMS          lab aim [tree|show|log|set|propose|pending|approve|reject|link|seed]  (Zac's project mind map)
   FRONTEND      lab map          <- refresh the knowledge map (~/lab/KNOWLEDGE_MAP.html)
                 lab know app [--fragment] · lab know export     (the long forms)
+  CALENDAR      lab cal add --title "…" --on YYYY-MM-DD --owner <agent>   dates that chase you
+                lab cal list [--within 30] · show · done · drop
   ANNOUNCE      lab note · board · status · digest · health
   NODE          lab node start|status|enter|rotate|stop  the allocation the lab runs inside
   REFRESH       lab refresh --all           restart sessions onto a NEW Claude Code build
@@ -581,6 +583,7 @@ case "$cmd" in
   refresh)   exec bash "$SELF/lab-agents-refresh" "$@";; # restart sessions onto a new CLI build
   know)      exec python3 "$SELF/lab-know" "$@";;
   task)      exec python3 "$SELF/lab-task" "$@";;
+  cal|calendar) exec python3 "$SELF/lab-cal" "$@";;   # dated entries that escalate to their owner
   ext)       exec bash "$SELF/lab-ext" "$@";;
   note)      cmd_note "$@";;
   digest)    cmd_digest "$@";;

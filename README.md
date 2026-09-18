@@ -114,6 +114,11 @@ Verdicts on the tree are yours to assert; an agent can log a result but never pr
 whatever replaced them. There's a
 [visual map](#-the-knowledge-map--built-for-research-projects-not-document-search) of the whole thing.
 
+🗓️ &nbsp; **Stop losing dates.** &nbsp; A deadline written in a task title reads the same on day 39 as
+on day 1, so it never fires. Register it instead and it comes and finds its **owner** — not whoever
+runs the daily job — with one notice per lead tier, escalating from *heads-up* to *TOMORROW* as the
+date closes. Silent otherwise, which is what keeps the daily check worth reading.
+
 🔎 &nbsp; **Get a second opinion.** &nbsp; Optionally plug in a coding assistant from a *different*
 company (Codex, Gemini CLI, Aider…) as an independent reviewer any agent can consult. It reads your
 code and data but can't change anything — useful precisely because it isn't one of your own agents
@@ -219,6 +224,7 @@ the same commands your agents use are there for you: `lab help` for a map, or `l
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | the habits your agents follow — worth skimming |
 | [`docs/compute-node-mode.md`](docs/compute-node-mode.md) | running the lab inside an HPC allocation, and rotating it automatically (experimental) |
 | [`docs/knowledge-map.md`](docs/knowledge-map.md) | the aim tree, claims and experiment cards — and why it isn't a RAG system |
+| [`docs/calendar.md`](docs/calendar.md) | dated entries that escalate to their owner, and why they stay quiet |
 | [`docs/dataset-registry.md`](docs/dataset-registry.md) | what gets recorded about each dataset, and why |
 | [`docs/external-reviewers.md`](docs/external-reviewers.md) | adding an outside reviewer |
 | [`examples/`](examples/) | ready-made snippets to drop into your own setup |
