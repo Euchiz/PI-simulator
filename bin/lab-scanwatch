@@ -111,4 +111,11 @@ Verify: is sid $sid a dead session (nothing else alive in it) on a forbidden roo
       touch "$stamp"; log "ALERT-TECH no-live-owner scan pid=$pid $comm ${etimes}s on $mount ${agent:+owner=$agent(dead) }ppid=$ppid sid=$sid cwd=$cwd args=[$short_args]"
     fi
   fi
-done < <(ps -eo pid=,etimes=,comm= 2>/dev/null)
+# OUR PROCESSES ONLY (-U by real uid), not `ps -e`. This node is shared -- 14 distinct users had
+# processes on it when this was written -- and on 2026-09-19 the watchdog escalated a VS Code
+# ripgrep belonging to abrahama6, instructing the technician to `kill` it. That kill could only ever
+# fail with EPERM, and an alert whose prescribed action is impossible is worse than no alert: it
+# trains the reader to skim past the one that is real. Another user's scan is also not ours to
+# police. If their load actually degrades the node, that is memwatch's and loadavg's job, measured
+# as load rather than attributed as a culprit.
+done < <(ps -U "$(id -u)" -o pid=,etimes=,comm= 2>/dev/null)
