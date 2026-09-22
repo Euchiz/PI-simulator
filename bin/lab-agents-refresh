@@ -37,6 +37,23 @@ live_ids() { timeout 60 claude agents --json 2>/dev/null | python3 -c \
 # not the filesystem, decides what is eligible.
 SETUP_PROMPT="This session was just restarted. Run the lab-setup skill now: repair this session's lab identity, consume its inbox, ARM the live message watcher, and self-check the lab wiring. Then report the state in a few lines and STOP — do not resume any previous work and do not start anything new until asked."
 
+# DISABLED 2026-09-22. Both invocations shipped so far are wrong in opposite ways:
+#   --bg --remote-control --resume X --name Y   backgrounds, but FORKS A COPY under a new id
+#   --resume X "<prompt>"                        continues the right session, but runs in the
+#                                                FOREGROUND and blocks forever from a script with
+#                                                no TTY -- unresponsive to Ctrl-C
+# The second hung on the first session of a real --all run and left it stopped and unresumed. A dry
+# run cannot catch this: the blocking call is exactly the path --dry-run skips, which is why it
+# shipped twice. Until a form that BOTH backgrounds and continues is known, the agents view is the
+# supported way -- it uses each session's own saved options.
+if [ "$DRY" != 1 ]; then
+  echo "lab refresh: DISABLED — the resume invocation is not known-good. A real run on 2026-09-22"
+  echo "  hung on its first session and left it stopped. Restart sessions from the agents view:"
+  echo "      claude agents      then resume each session"
+  echo "  --dry-run still works and shows what it would touch."
+  exit 2
+fi
+
 n_husk=0
 LIVE=" $(live_ids) "
 # Names already held by a LIVE session: never resume a second record for one of these, or the two
