@@ -10,7 +10,7 @@ Get a session properly attached to the lab, then prove it is attached.
 **The problem this solves:** SessionStart already injects the aims tree, so a restarted session *looks*
 oriented. But two things it cannot do are exactly the two that break silently — a session whose job
 came back without its name has **no identity** (its `lab read` fails and its mail piles up unread), and
-the **watcher is never armed by a hook** (a shell cannot call the Monitor tool, so live delivery is off
+the **watcher is never armed by a hook** (a shell cannot start a harness background task, so live delivery is off
 until an agent arms it). Both failures are invisible: the session feels fine and simply stops hearing
 from anyone.
 
@@ -27,20 +27,24 @@ name:
 - If it is ambiguous, **ask the user which name this session owns** — guessing wrong steals another
   session's inbox, which is worse than asking.
 
-## 2. Arm live delivery
-
-> **LIVE DELIVERY IS CURRENTLY DISABLED lab-wide** whenever `~/lab/.watch-disabled` exists (check with `ls ~/lab/.watch-disabled`). While it exists, **do NOT arm the Monitor watcher** — Claude Code 2.1.280 caps Monitor at 30 minutes, so an endless watcher only burns a turn every half hour, and `lab watch` exits immediately anyway. Read mail with `lab read` instead. When the file is gone, the instructions below apply again.
- — the step only the agent can take
+## 2. Arm live delivery — the step only the agent can take
 
 ```
-Monitor(command: "LAB_WATCH_INTERVAL=60 ~/lab/bin/lab watch",
-        description: "incoming lab messages", persistent: true)
+Bash(command: "~/lab/bin/lab watch", run_in_background: true)
 ```
 
-Always run it, every time this skill is invoked. It is idempotent by design: a live watcher exits
-harmlessly ("duplicate exiting"), a killed or superseded one is taken over. **Never skip it on the
-assumption one is still running** — a silently-killed watcher is the common failure, and re-arming is
-the only way it gets replaced.
+Run it as a **background** command — not the Monitor tool (Claude Code caps Monitor at 30 minutes,
+so an endless watcher expired and had to be re-armed every half hour). `lab watch` is one-shot: it
+waits, and when mail arrives it prints what came in and **exits** — which wakes you. Then:
+
+1. `lab read` to consume the mail — its last line is the re-arm command
+2. re-arm with the same command above
+
+Nothing is missed in between: re-arming fires **immediately** if mail landed while you were
+replying. Safe to repeat — a second arm in the same session just says "already armed".
+Always arm when this skill runs; a session with no waiter hears nothing until its next startup.
+
+> If `~/lab/.watch-disabled` exists, live delivery is switched OFF lab-wide: don't arm, `lab watch` exits at once anyway — just use `lab read`.
 
 ## 3. Self-check the lab system
 

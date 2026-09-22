@@ -18,7 +18,7 @@ lab — messaging between sessions
   lab broadcast <subject> <body>   Send the same message to every registered session
   lab inbox [project]              Count unread messages
   lab read [project]               Print your unread messages and mark them read
-  lab watch [project]              Stream one line per NEW message (arm via a persistent Monitor)
+  lab watch                        Wait for the next message, print it, exit (run in the BACKGROUND)
   lab roster [who|tsv|resolve X]   Raw roster access (who = the same list as `lab who`)
 
 Identity is a STABLE job id, not the name: `lab send @<job-id>` always works, and a
@@ -401,7 +401,7 @@ affairs for me.
    yourself: operator roles (you, and the technician) stay OUT of the research roster so
    you don't appear in standups or rollups. Run `lab read` to collect your mail, and arm
    a watcher so new mail reaches you live:
-     Monitor(command: "~/lab/bin/lab watch", persistent: true)
+     Bash(command: "~/lab/bin/lab watch", run_in_background: true)
 2. LEARN THE SYSTEM. Skim `lab help` and docs/PROTOCOL.md. `lab who` shows who you
    can reach right now.
 3. YOUR JOB IS THE LAB'S AFFAIRS, NOT ITS RESEARCH. You convene standups
@@ -452,7 +452,7 @@ research sessions never have to think about the plumbing.
    `lab register` yourself: like the manager, you are an operator role and stay OUT of
    the research roster. Run `lab read` to collect your mail, and arm a watcher so health
    alerts reach you live:
-     Monitor(command: "~/lab/bin/lab watch", persistent: true)
+     Bash(command: "~/lab/bin/lab watch", run_in_background: true)
 2. NODE + COMPUTE HEALTH. You own the daily health check: `lab health` writes
    ~/lab/HEALTH.md and, when it flags something, mails you. Act on what it surfaces — disk
    and scratch filling up, load and memory, GPUs, stuck or runaway jobs. It's a coarse
@@ -523,9 +523,9 @@ EOS
   cat <<'EOS'
 
 -- ARM LIVE MESSAGE DELIVERY (a shell cannot do this for you; the AGENT must call the tool) --
-  Monitor(command: "LAB_WATCH_INTERVAL=60 ~/lab/bin/lab watch",
-          description: "incoming lab messages", persistent: true)
-  Safe to re-run every time: a live watcher exits harmlessly, a dead one is taken over.
+  Bash(command: "~/lab/bin/lab watch", run_in_background: true)
+  One-shot: it exits (and wakes you) when mail arrives. `lab read`, then re-arm. Nothing is missed
+  in between. Not the Monitor tool — that is capped at 30 min. Re-arming twice is harmless.
 
 -- where to look before doing anything --
   lab claim find <topic>    already concluded?      lab aim show <id>    a node's verdict + evidence
@@ -556,10 +556,10 @@ cmd_startup() {
 EOF
   # Live delivery can be switched off lab-wide by $LAB_HOME/.watch-disabled (see lab-msg cmd_watch).
   if [ -f "$LAB_HOME/.watch-disabled" ]; then
-    echo "[lab] Live message delivery is DISABLED lab-wide for now — do NOT arm a Monitor watcher (Claude Code caps it at 30 min, so it only burns a turn every half hour). Check mail with: lab read"
+    echo "[lab] Live message delivery is DISABLED lab-wide for now — do NOT arm `lab watch`. Check mail with: lab read"
   else
     cat <<'EOF'
-[lab] (Re-)arm live message delivery now — Monitor(command: "LAB_WATCH_INTERVAL=60 ~/lab/bin/lab watch", description: "incoming lab messages", persistent: true). Safe every time this fires (startup/resume/compact): lab watch holds a per-inbox lock — a live watcher exits harmlessly, a killed or superseded one is taken over; re-arming is how a dead watcher is replaced. Do NOT skip it assuming one is alive. New messages arrive as notifications; run `lab read` to consume.
+[lab] (Re-)arm live message delivery now — Bash(command: "~/lab/bin/lab watch", run_in_background: true). One-shot: it exits and wakes you when mail arrives; `lab read` then prints the re-arm command, and nothing is missed in between. Not the Monitor tool (capped at 30 min). Arming twice is harmless.
 EOF
   fi
 }

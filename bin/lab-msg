@@ -87,6 +87,14 @@ cmd_read() {
       [ "$consume" = 1 ] && { mv "$f" "$INBOX/$n/.read/" 2>/dev/null || true; }
     fi
   done
+  # Forget announcements for mail that is no longer unread, so the list cannot grow forever.
+  if [ "$consume" = 1 ] && [ -f "$INBOX/$n/.watch-announced" ]; then
+    local keep=""; for f in "$INBOX/$n"/*.md; do [ -e "$f" ] && keep+="$(basename "$f")"$'\n'; done
+    printf '%s' "$keep" > "$INBOX/$n/.watch-announced"
+  fi
+  if [ "$consume" = 1 ] && [ ! -f "$LAB_HOME/.watch-disabled" ]; then
+    echo "↻ re-arm live delivery: run  lab watch  as a BACKGROUND command (Bash, run_in_background: true)"
+  fi
   if [ "$any" != 1 ]; then echo "[$n] inbox empty"
   elif [ "$consume" = 0 ]; then
     echo "(peeked '$n' — NOT your inbox, so its mail is left UNREAD; only the owner's own \`lab read\` consumes it)"
@@ -102,69 +110,75 @@ watch_emit() {
   echo "NEW lab message — from ${from:-?}: ${subj:-(no subject)}  → run: ~/lab/bin/lab read"
 }
 
-# Long-lived watcher: prints one line per NEW inbox message, forever.
-# Designed to be armed via the Monitor tool (persistent) so each line becomes a
-# notification. Cheap by construction: `ls` on ONE tiny inbox dir, never a scan.
-# NOTE: ~/lab is NFS and inotify is unavailable/unreliable there -> poll.
+# ONE-SHOT watcher: waits for the next unannounced message, prints it, and EXITS.
+#
+# Run it as a BACKGROUND command (Bash tool, run_in_background: true). The harness wakes the session
+# when it exits, so the session is woken exactly once per arrival and costs nothing while idle.
+#
+# Why not the old endless loop under Monitor: Claude Code 2.1.280 caps Monitor at 30 minutes even
+# when persistent is requested, so an endless watcher expired every half hour and every session spent
+# a turn re-arming it. Background commands are not capped (verified 2026-09-22: armed 18:20:53, fired
+# 18:55:54 on a message sent 35 min later, 1 s after it landed).
+#
+# NOTHING IS MISSED BETWEEN ARMINGS. "Unread" is simply a *.md file still in the inbox (lab read
+# moves them to .read/). A new watcher fires IMMEDIATELY if any unread message it has not already
+# announced is present -- so mail that arrived while the agent was replying is caught the instant it
+# re-arms. Announced-but-unread messages are remembered in .watch-announced so re-arming does not
+# re-fire on them in a loop.
+#
+# Cheap by construction: one `ls` of ONE tiny inbox dir per poll, never a scan. ~/lab is NFS and
+# inotify is unreliable there, hence polling.
 cmd_watch() {
   ensure_init
   reconcile_self   # pick up a rename before we start watching an inbox
   local n; n="$(pkey "${1:-$(resolve_self || true)}")"
-  [ -n "$n" ] || die "usage: lab watch [project]  (or run inside a registered session)"
+  [ -n "$n" ] || die "usage: lab watch   (run inside a registered session)"
   local dir="$INBOX/$n"; mkdir -p "$dir"
   local interval="${LAB_WATCH_INTERVAL:-30}"
 
-  # KILL SWITCH: $LAB_HOME/.watch-disabled. Checked at start AND on every poll. Claude Code 2.1.280
-  # caps Monitor at 30 minutes even when asked for persistent, so an endless watcher expires and every
-  # session burns a turn re-arming it, forever. Running sessions already have "re-arm" in their
-  # context, so rewording the instructions cannot stop them -- a watcher that exits at once can. It
-  # ENDS its Monitor immediately, so there is no expiry wake-up. Remove the file to re-enable.
+  # KILL SWITCH: $LAB_HOME/.watch-disabled turns live delivery off lab-wide.
   local off="$LAB_HOME/.watch-disabled"
   if [ -f "$off" ]; then
     echo "lab watch: live delivery is DISABLED lab-wide ($off). Do not re-arm. Check mail with: lab read"
     return 0
   fi
 
-  # --- single-watcher guard (idempotent, SESSION-AWARE) -----------------------
-  # SessionStart fires on resume/compact too, so an agent may arm the watcher
-  # several times in ONE session -> a duplicate exits harmlessly (ends its Monitor).
-  #
-  # But an agent's OLD session can leak a still-running watcher. That stale watcher
-  # must NOT block the live session (it would silently get no delivery, and would
-  # keep eating this inbox's mail). So the lock records "<pid> <session-id>":
-  #   same session + alive  -> genuine duplicate, exit
-  #   other session         -> superseded; TAKE OVER the lock and warn
-  #   dead pid              -> stale; take over
+  # --- one waiter per session -------------------------------------------------
+  # same session + alive -> genuine duplicate, exit (tell the agent nothing needs doing)
+  # other session / dead pid -> stale, take over
   local lockdir="$LAB_HOME/.watch"; mkdir -p "$lockdir"
   local lock="$lockdir/$n.lock" old_pid old_sid
   local my_sid="${CLAUDE_CODE_SESSION_ID:-unknown}"
   if [ -f "$lock" ]; then
     read -r old_pid old_sid < "$lock" 2>/dev/null || true
-    if [ -n "${old_pid:-}" ] && [ "$old_pid" != "$$" ] && kill -0 "$old_pid" 2>/dev/null; then
-      if [ "${old_sid:-}" = "$my_sid" ]; then
-        echo "lab watch: already watching '$n' (pid $old_pid, this session) — duplicate exiting."
-        return 0
-      fi
-      echo "lab watch: taking over '$n' from a SUPERSEDED session (stale pid $old_pid, sid ${old_sid:-?}). That process is still running and should be killed: kill $old_pid"
+    if [ -n "${old_pid:-}" ] && [ "$old_pid" != "$$" ] && kill -0 "$old_pid" 2>/dev/null \
+       && [ "${old_sid:-}" = "$my_sid" ]; then
+      echo "lab watch: already armed for '$n' (pid $old_pid) — nothing to do."
+      return 0
     fi
   fi
   printf '%s %s\n' "$$" "$my_sid" > "$lock"
-  trap 'rm -f "$lock" 2>/dev/null' EXIT INT TERM
+  # Expand $lock NOW: the one-shot watcher RETURNS normally, so the EXIT trap fires after this
+  # function's locals are gone, and under `set -u` a late "$lock" is an unbound-variable error --
+  # exit 1, which the harness reports as a FAILED task even though mail was delivered.
+  trap "rm -f '$lock' 2>/dev/null" EXIT INT TERM
   # ---------------------------------------------------------------------------
-  local seen cur new f
-  seen="$( (cd "$dir" && ls -1 -- *.md 2>/dev/null) | sort || true )"
-  # announce anything already waiting, then stream new arrivals
-  while IFS= read -r f; do [ -n "$f" ] && watch_emit "$dir/$f"; done <<< "$seen"
+
+  local ann="$dir/.watch-announced"; touch "$ann"
+  local f fresh
   while true; do
-    sleep "$interval"
-    if [ -f "$off" ]; then
-      echo "lab watch: live delivery DISABLED lab-wide — exiting. Do not re-arm. Check mail with: lab read"
+    [ -f "$off" ] && { echo "lab watch: live delivery DISABLED lab-wide — exiting. Check mail with: lab read"; return 0; }
+    fresh=()
+    for f in "$dir"/*.md; do
+      [ -e "$f" ] || continue
+      grep -qxF "$(basename "$f")" "$ann" 2>/dev/null || fresh+=("$f")
+    done
+    if [ ${#fresh[@]} -gt 0 ]; then
+      for f in "${fresh[@]}"; do watch_emit "$f"; basename "$f" >> "$ann"; done
+      echo "Next: lab read   (it prints the re-arm command when it is done)"
       return 0
     fi
-    cur="$( (cd "$dir" && ls -1 -- *.md 2>/dev/null) | sort || true )"
-    new="$(comm -13 <(printf '%s\n' "$seen") <(printf '%s\n' "$cur") 2>/dev/null || true)"
-    while IFS= read -r f; do [ -n "$f" ] && watch_emit "$dir/$f"; done <<< "$new"
-    seen="$cur"
+    sleep "$interval"
   done
 }
 
