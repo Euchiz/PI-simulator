@@ -114,6 +114,17 @@ cmd_watch() {
   local dir="$INBOX/$n"; mkdir -p "$dir"
   local interval="${LAB_WATCH_INTERVAL:-30}"
 
+  # KILL SWITCH: $LAB_HOME/.watch-disabled. Checked at start AND on every poll. Claude Code 2.1.280
+  # caps Monitor at 30 minutes even when asked for persistent, so an endless watcher expires and every
+  # session burns a turn re-arming it, forever. Running sessions already have "re-arm" in their
+  # context, so rewording the instructions cannot stop them -- a watcher that exits at once can. It
+  # ENDS its Monitor immediately, so there is no expiry wake-up. Remove the file to re-enable.
+  local off="$LAB_HOME/.watch-disabled"
+  if [ -f "$off" ]; then
+    echo "lab watch: live delivery is DISABLED lab-wide ($off). Do not re-arm. Check mail with: lab read"
+    return 0
+  fi
+
   # --- single-watcher guard (idempotent, SESSION-AWARE) -----------------------
   # SessionStart fires on resume/compact too, so an agent may arm the watcher
   # several times in ONE session -> a duplicate exits harmlessly (ends its Monitor).
@@ -146,6 +157,10 @@ cmd_watch() {
   while IFS= read -r f; do [ -n "$f" ] && watch_emit "$dir/$f"; done <<< "$seen"
   while true; do
     sleep "$interval"
+    if [ -f "$off" ]; then
+      echo "lab watch: live delivery DISABLED lab-wide — exiting. Do not re-arm. Check mail with: lab read"
+      return 0
+    fi
     cur="$( (cd "$dir" && ls -1 -- *.md 2>/dev/null) | sort || true )"
     new="$(comm -13 <(printf '%s\n' "$seen") <(printf '%s\n' "$cur") 2>/dev/null || true)"
     while IFS= read -r f; do [ -n "$f" ] && watch_emit "$dir/$f"; done <<< "$new"

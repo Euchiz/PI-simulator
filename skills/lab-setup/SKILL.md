@@ -27,7 +27,10 @@ name:
 - If it is ambiguous, **ask the user which name this session owns** — guessing wrong steals another
   session's inbox, which is worse than asking.
 
-## 2. Arm live delivery — the step only the agent can take
+## 2. Arm live delivery
+
+> **LIVE DELIVERY IS CURRENTLY DISABLED lab-wide** whenever `~/lab/.watch-disabled` exists (check with `ls ~/lab/.watch-disabled`). While it exists, **do NOT arm the Monitor watcher** — Claude Code 2.1.280 caps Monitor at 30 minutes, so an endless watcher only burns a turn every half hour, and `lab watch` exits immediately anyway. Read mail with `lab read` instead. When the file is gone, the instructions below apply again.
+ — the step only the agent can take
 
 ```
 Monitor(command: "LAB_WATCH_INTERVAL=60 ~/lab/bin/lab watch",
