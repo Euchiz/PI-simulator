@@ -210,7 +210,7 @@ lab — multi-agent coordination for Claude Code sessions ("PI simulator")
                 lab cal list [--within 30] · show · done · drop
   ANNOUNCE      lab note · board · status · digest · health
   NODE          lab node start|status|enter|rotate|stop  the allocation the lab runs inside
-  REFRESH       lab refresh --all           restart sessions onto a NEW Claude Code build
+  REFRESH       lab refresh --all           STOP sessions; then resume them in the agents view
                 lab refresh <name> …        (a running process cannot swap its own binary)
   MIGRATE       lab migrate depart          (on the OLD node: one command to move out)
                 lab migrate start|precheck|status|close|force|verify-dead|move|aftercheck

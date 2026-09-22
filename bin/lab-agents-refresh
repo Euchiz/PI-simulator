@@ -1,28 +1,26 @@
 #!/usr/bin/env bash
-# lab-agents-refresh — restart agent sessions IN PLACE so they pick up a new Claude Code binary.
+# lab-agents-refresh (`lab refresh`) — STOP sessions so they can be resumed onto a new Claude Code build.
 #
-# A running process cannot swap its own executable, so after `claude update` the daemon runs the new
-# version while every existing session keeps the one it was launched with. A rotation fixes that as a
-# side effect, but waiting days for it is not the point when you updated deliberately.
+#   lab refresh --all              stop every live session (except the one running this)
+#   lab refresh poreior wet-lab    stop the named sessions
+#   lab refresh --all --dry-run    show what would be stopped
 #
-#   lab-agents-refresh technician poreior     # named sessions
-#   lab-agents-refresh --all                  # every LIVE session
-#   lab-agents-refresh --all --include-dead   # also revive sessions whose process is gone
-#   lab-agents-refresh --all --dry-run        # show what would happen
+# Then resume each one from the agents view (`claude agents`). A resumed STOPPED session continues
+# under the SAME id, on whatever binary the launcher now points at — that is the refresh.
 #
-# --include-dead is for recovery: a session that was killed (a host-job fault, a daemon restart
-# storm) leaves a record and a transcript but no process, and neither `move` (it is already marked
-# moved) nor a plain refresh (it is not live) will bring it back. It never revives a record whose
-# name a live session already holds.
-#
-# Resume keeps the transcript, so nothing is lost but in-memory working context. --name preserves the
-# lab identity (inbox, roster, history), which is how `lab migrate move` does it.
+# Why only the stop half: a running process cannot swap its own executable, and clicking back into a
+# LIVE session in the agents view just re-attaches to the old process. So the one thing that needs
+# doing from the command line is stopping them. The resume half was tried from a script twice and was
+# wrong both ways: `--bg --remote-control --name` forks a COPY under a new id; bare
+# `--resume <id> "<prompt>"` runs in the FOREGROUND and blocks forever with no TTY (it hung a real run
+# on 2026-09-22 and stranded a session). The agents view resumes with each session's own saved
+# options and is known to work, so it owns that half.
 set -uo pipefail
 JOBS="$HOME/.claude/jobs"
-DRY=0; ALL=0; DEAD=0; WANT=()
+DRY=0; ALL=0; WANT=()
 for a in "$@"; do
   case "$a" in
-    --dry-run) DRY=1;; --all) ALL=1;; --include-dead) DEAD=1;; -h|--help) sed -n '2,16p' "$0"; exit 0;;
+    --dry-run) DRY=1;; --all) ALL=1;; -h|--help) sed -n '2,17p' "$0"; exit 0;;
     *) WANT+=("$(echo "$a" | tr 'A-Z' 'a-z')");;
   esac
 done
@@ -31,103 +29,61 @@ done
 live_ids() { timeout 60 claude agents --json 2>/dev/null | python3 -c \
   "import json,sys; print(' '.join(x.get('id','') for x in json.load(sys.stdin)))" 2>/dev/null; }
 
-# A job dir on disk is NOT proof of a live session: dirs linger after a session ends (which is why
-# `lab migrate aftercheck --finalise` archives them). Resuming one would start a SECOND session under
-# a lab name that already has an owner, and the two then eat each other's inbox. So the live listing,
-# not the filesystem, decides what is eligible.
-SETUP_PROMPT="This session was just restarted. Run the lab-setup skill now: repair this session's lab identity, consume its inbox, ARM the live message watcher, and self-check the lab wiring. Then report the state in a few lines and STOP — do not resume any previous work and do not start anything new until asked."
+# The session running this command, if any. Stopping it would kill the script mid-loop and leave the
+# rest untouched, so it is skipped and named at the end for you to stop last.
+SELF_SID="$(basename "${CLAUDE_JOB_DIR:-}" 2>/dev/null)"
 
-# DISABLED 2026-09-22. Both invocations shipped so far are wrong in opposite ways:
-#   --bg --remote-control --resume X --name Y   backgrounds, but FORKS A COPY under a new id
-#   --resume X "<prompt>"                        continues the right session, but runs in the
-#                                                FOREGROUND and blocks forever from a script with
-#                                                no TTY -- unresponsive to Ctrl-C
-# The second hung on the first session of a real --all run and left it stopped and unresumed. A dry
-# run cannot catch this: the blocking call is exactly the path --dry-run skips, which is why it
-# shipped twice. Until a form that BOTH backgrounds and continues is known, the agents view is the
-# supported way -- it uses each session's own saved options.
-if [ "$DRY" != 1 ]; then
-  echo "lab refresh: DISABLED — the resume invocation is not known-good. A real run on 2026-09-22"
-  echo "  hung on its first session and left it stopped. Restart sessions from the agents view:"
-  echo "      claude agents      then resume each session"
-  echo "  --dry-run still works and shows what it would touch."
-  exit 2
-fi
-
-n_husk=0
 LIVE=" $(live_ids) "
-# Names already held by a LIVE session: never resume a second record for one of these, or the two
-# fight over one inbox. This is the guard that matters once --include-dead is in play.
-CLAIMED=""
-for d0 in "$JOBS"/*/; do
-  s0=$(basename "$d0"); [ -f "$d0/state.json" ] || continue
-  case "$LIVE" in *" $s0 "*) CLAIMED="$CLAIMED $(python3 -c "
-import json;print((json.load(open('$d0/state.json')).get('name') or '').lower())" 2>/dev/null)";; esac
-done
+[ "$LIVE" = "  " ] && { echo "lab refresh: could not read the live session list (claude agents failed)"; exit 1; }
 
+targets=(); names=(); skipped_self=""; n_husk=0
 for d in "$JOBS"/*/; do
   sid=$(basename "$d")
-  # A husk with no state.json has no name and no transcript pointer -- nothing to resume from.
-  # Counted rather than passed over in silence: "nothing was dead" and "I could not read it" must
-  # not look the same to the caller.
-  if [ ! -f "$d/state.json" ]; then n_husk=$(( n_husk + 1 )); continue; fi
-  islive=0; case "$LIVE" in *" $sid "*) islive=1;; esac
-  if [ "$islive" = 0 ] && [ "$DEAD" != 1 ]; then continue; fi
-  # TAB-separated, not space: a session name can contain spaces ("virtual cell challenge research")
-  # and a space-split silently truncates it to the first word -- which breaks name matching and
-  # misreports what is about to be restarted.
-  IFS=$'\t' read -r name full < <(python3 -c "
-import json;d=json.load(open('$d/state.json'));print((d.get('name') or '?')+chr(9)+(d.get('sessionId') or ''))" 2>/dev/null)
-  [ -n "$full" ] || continue
+  if [ ! -f "$d/state.json" ]; then n_husk=$((n_husk+1)); continue; fi
+  case "$LIVE" in *" $sid "*) ;; *) continue;; esac          # only LIVE sessions need stopping
+  # TAB-separated: names can contain spaces.
+  IFS=$'\t' read -r name _ < <(python3 -c "
+import json;d=json.load(open('$d/state.json'));print((d.get('name') or '?')+chr(9))" 2>/dev/null)
   lname=$(echo "$name" | tr 'A-Z' 'a-z')
   if [ "$ALL" != 1 ]; then
     hit=0; for w in "${WANT[@]}"; do [ "$w" = "$lname" ] && hit=1; done
     [ "$hit" = 1 ] || continue
   fi
-  # No "currently on <version>" column: a session's worker process is not identifiable from its
-  # cmdline, and the lookup printed the wrong process. A wrong value is worse than no value.
-  if [ "$islive" = 1 ]; then state_word="live"; else state_word="DOWN"; fi
-  echo "== $name ($sid, $state_word)"
-
-  # A DOWN record whose name a LIVE session already holds is a stale duplicate, not something to
-  # revive: resuming it would put two records on one inbox. Skip it and say why.
-  if [ "$islive" = 0 ]; then
-    case " $CLAIMED " in
-      *" $lname "*) echo "   skipped — '$name' is already held by a live session"; continue;;
-    esac
-  fi
-
-  if [ "$DRY" = 1 ]; then
-    if [ "$islive" = 1 ]; then echo "   would: stop, verify stopped, resume (same id)"
-    else echo "   would: resume from transcript (already down, no stop needed)"; fi
-    continue
-  fi
-
-  if [ "$islive" = 1 ]; then
-    claude stop "$sid" >/dev/null 2>&1
-    # GATE ON THE OUTCOME, not on stop's exit code: resuming while the old process lives gives two
-    # sessions the same lab name, and they consume each other's inbox.
-    gone=0
-    for _ in $(seq 1 20); do
-      case " $(live_ids) " in *" $sid "*) sleep 3;; *) gone=1; break;; esac
-    done
-    if [ "$gone" != 1 ]; then echo "   STILL LISTED after 60s — skipped, not resuming a duplicate"; continue; fi
-  fi
-
-  # NO FLAGS. A background session keeps its own saved options (--bg, --remote-control, --name), and
-  # passing them again does not continue it -- it FORKS A COPY under a new id, leaving the original
-  # as a ghost and two records claiming one lab name, which then eat each other's inbox. The CLI says
-  # so itself: "background session <id> keeps its own saved options, so the flags you passed started
-  # a copy". Bare `--resume <id>` continues the session; it needs a PROMPT, because a session that
-  # ended cleanly has no deferred tool call to pick up ("No deferred tool marker found").
-  #
-  # `lab migrate move` passes those flags deliberately and correctly: it resumes onto a node where no
-  # live process exists for that transcript and a NEW record is what it wants. Same flags, opposite
-  # meaning, decided entirely by whether a live record already exists. Do not unify them.
-  claude --resume "$full" "$SETUP_PROMPT" >/dev/null 2>&1 \
-    && echo "   restarted (same id $sid)" \
-    || echo "   RESUME FAILED — transcript is intact: $full"
+  if [ -n "$SELF_SID" ] && [ "$sid" = "$SELF_SID" ]; then skipped_self="$name ($sid)"; continue; fi
+  targets+=("$sid"); names+=("$name")
 done
 
-[ "$n_husk" -gt 0 ] && echo "($n_husk job record(s) skipped: no state.json, nothing to resume from)"
-exit 0
+if [ ${#targets[@]} -eq 0 ]; then
+  echo "lab refresh: nothing live to stop${skipped_self:+ (only this session, $skipped_self)}"; exit 0
+fi
+
+for i in "${!targets[@]}"; do
+  echo "== ${names[$i]} (${targets[$i]})$([ "$DRY" = 1 ] && echo '  — would stop')"
+done
+[ "$DRY" = 1 ] && { [ -n "$skipped_self" ] && echo "(skipping this session: $skipped_self)"; exit 0; }
+
+# Stop all first, then verify ONCE per poll across all of them — not a full listing per session.
+for sid in "${targets[@]}"; do timeout 60 claude stop "$sid" >/dev/null 2>&1 & done
+wait
+
+pending=("${targets[@]}")
+for _ in $(seq 1 12); do
+  now=" $(live_ids) "; still=()
+  for sid in "${pending[@]}"; do case "$now" in *" $sid "*) still+=("$sid");; esac; done
+  pending=("${still[@]}")
+  [ ${#pending[@]} -eq 0 ] && break
+  sleep 5
+done
+
+echo
+for i in "${!targets[@]}"; do
+  sid=${targets[$i]}; st="STOPPED"
+  for p in "${pending[@]}"; do [ "$p" = "$sid" ] && st="STILL LIVE — stop failed, not safe to resume"; done
+  printf "  %-9s %-34s %s\n" "$sid" "${names[$i]}" "$st"
+done
+echo
+echo "Now resume each STOPPED session from the agents view:  claude agents"
+echo "(same id comes back, on the new binary)"
+[ -n "$skipped_self" ] && echo "Not stopped: $skipped_self — the session running this. Stop it last, then resume it."
+[ "$n_husk" -gt 0 ] && echo "($n_husk job record(s) skipped: no state.json)"
+[ ${#pending[@]} -eq 0 ]
