@@ -56,8 +56,11 @@ for d in "$JOBS"/*/; do
   if [ ! -f "$d/state.json" ]; then n_husk=$(( n_husk + 1 )); continue; fi
   islive=0; case "$LIVE" in *" $sid "*) islive=1;; esac
   if [ "$islive" = 0 ] && [ "$DEAD" != 1 ]; then continue; fi
-  read -r name full < <(python3 -c "
-import json;d=json.load(open('$d/state.json'));print(d.get('name') or '?', d.get('sessionId') or '')" 2>/dev/null)
+  # TAB-separated, not space: a session name can contain spaces ("virtual cell challenge research")
+  # and a space-split silently truncates it to the first word -- which breaks name matching and
+  # misreports what is about to be restarted.
+  IFS=$'\t' read -r name full < <(python3 -c "
+import json;d=json.load(open('$d/state.json'));print((d.get('name') or '?')+chr(9)+(d.get('sessionId') or ''))" 2>/dev/null)
   [ -n "$full" ] || continue
   lname=$(echo "$name" | tr 'A-Z' 'a-z')
   if [ "$ALL" != 1 ]; then
