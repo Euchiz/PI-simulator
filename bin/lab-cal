@@ -89,7 +89,9 @@ def notify(to, subj, body):
     try:
         subprocess.run([os.path.join(LAB,"bin","lab"),"send","--force",to,subj,body],
                        capture_output=True, text=True, timeout=25,
-                       env={**os.environ, "LAB_HOME": LAB})
+                       # A system job has no session identity, so without this the notice is
+                       # signed "from: unknown". Name the sender so the owner knows what it is.
+                       env={**os.environ, "LAB_HOME": LAB, "LAB_FROM": os.environ.get("LAB_FROM") or "lab-cal"})
         return True
     except Exception as e:
         print(f"  (notice to {to} failed: {type(e).__name__})", file=sys.stderr); return False
