@@ -248,6 +248,23 @@ Built on and for [Claude Code](https://github.com/anthropics/claude-code), Anthr
 In daily use coordinating a real multi-agent research project. Things may still move around.
 Questions and suggestions welcome — open an issue.
 
+### Claude Code compatibility
+
+This project leans on Claude Code internals that change between releases — background sessions,
+the agent view, session resume, cross-session messaging, and the limits on long-running tools. A
+Claude Code update has broken it more than once (an auto-update that restarted every background
+session; a release that began capping the tool live mail delivery depended on). So **every tagged
+release names the Claude Code version it was verified on**, and that is the version to pin if
+something misbehaves:
+
+| PI simulator | verified on Claude Code | notes |
+|---|---|---|
+| v0.7.0 | **2.1.286** | live mail via Claude Code's own cross-session messaging, which needs ≥ 2.1.224 |
+| v0.6.3 and earlier | not recorded | |
+
+Pin a version with `claude install <version>` and stop it drifting with
+`"env": {"DISABLE_AUTOUPDATER": "1"}` in `~/.claude/settings.json`.
+
 ## ⚖️ License
 
 MIT — see [LICENSE](LICENSE).
