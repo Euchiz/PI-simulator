@@ -18,7 +18,7 @@ lab — messaging between sessions
   lab broadcast <subject> <body>   Send the same message to every registered session
   lab inbox [project]              Count unread messages
   lab read [project]               Print your unread messages and mark them read
-  lab watch                        Wait for the next message, print it, exit (run in the BACKGROUND)
+  lab send <to> "<subj>" "<body>"  Durable mail; prints the SendMessage call that wakes them
   lab roster [who|tsv|resolve X]   Raw roster access (who = the same list as `lab who`)
 
 Identity is a STABLE job id, not the name: `lab send @<job-id>` always works, and a
@@ -319,7 +319,6 @@ cmd_init() {
 
 # ── messaging ────────────────────────────────────────────────────────────────
 #LAB_IDLE_MIN=360           # minutes idle before a session stops being a valid send target
-#LAB_WATCH_INTERVAL=30      # seconds between inbox polls for `lab watch`
 
 # ── external reviewers (optional; `lab ext`) ─────────────────────────────────
 # Each external agent is a self-contained package with its OWN settings file:
@@ -399,9 +398,8 @@ affairs for me.
    "{{manager}}", append LAB_MANAGER="<that key>" to $LAB_HOME/lab.env (quoted) —
    otherwise the scheduled jobs write to a mailbox nobody reads. Do NOT `lab register`
    yourself: operator roles (you, and the technician) stay OUT of the research roster so
-   you don't appear in standups or rollups. Run `lab read` to collect your mail, and arm
-   a watcher so new mail reaches you live:
-     Bash(command: "~/lab/bin/lab watch", run_in_background: true)
+   you don't appear in standups or rollups. Run `lab read` to collect your mail. A "lab mail" nudge
+   from another session (SendMessage) means run `lab read` again.
 2. LEARN THE SYSTEM. Skim `lab help` and docs/PROTOCOL.md. `lab who` shows who you
    can reach right now.
 3. YOUR JOB IS THE LAB'S AFFAIRS, NOT ITS RESEARCH. You convene standups
@@ -450,9 +448,8 @@ research sessions never have to think about the plumbing.
    "{{technician}}", append LAB_TECHNICIAN="<that key>" to $LAB_HOME/lab.env (quoted) —
    otherwise the daily health check's alerts go to the wrong mailbox. Do NOT
    `lab register` yourself: like the manager, you are an operator role and stay OUT of
-   the research roster. Run `lab read` to collect your mail, and arm a watcher so health
-   alerts reach you live:
-     Bash(command: "~/lab/bin/lab watch", run_in_background: true)
+   the research roster. Run `lab read` to collect your mail. A "lab mail" nudge from
+   another session (SendMessage) means run `lab read` again.
 2. NODE + COMPUTE HEALTH. You own the daily health check: `lab health` writes
    ~/lab/HEALTH.md and, when it flags something, mails you. Act on what it surfaces — disk
    and scratch filling up, load and memory, GPUs, stuck or runaway jobs. It's a coarse
@@ -522,10 +519,9 @@ EOS
   "$SELF/lab-know" aim tree --compact 2>/dev/null || true
   cat <<'EOS'
 
--- ARM LIVE MESSAGE DELIVERY (a shell cannot do this for you; the AGENT must call the tool) --
-  Bash(command: "~/lab/bin/lab watch", run_in_background: true)
-  One-shot: it exits (and wakes you) when mail arrives. `lab read`, then re-arm. Nothing is missed
-  in between. Not the Monitor tool — that is capped at 30 min. Re-arming twice is harmless.
+-- LIVE DELIVERY: nothing to arm --
+  Mail is in your lab inbox (lab read). A "lab mail" nudge from another session means run lab read.
+  When you lab send something time-sensitive, make the SendMessage call it prints.
 
 -- where to look before doing anything --
   lab claim find <topic>    already concluded?      lab aim show <id>    a node's verdict + evidence
@@ -554,14 +550,7 @@ cmd_startup() {
   • lab claim find <topic>     what we've concluded — retracted stays hidden · lab facts   (lab help knowledge)
   Register what YOU produce the moment it works:  lab tool add · lab data add · lab claim add.
 EOF
-  # Live delivery can be switched off lab-wide by $LAB_HOME/.watch-disabled (see lab-msg cmd_watch).
-  if [ -f "$LAB_HOME/.watch-disabled" ]; then
-    echo "[lab] Live message delivery is DISABLED lab-wide for now — do NOT arm lab watch. Check mail with: lab read"
-  else
-    cat <<'EOF'
-[lab] (Re-)arm live message delivery now — Bash(command: "~/lab/bin/lab watch", run_in_background: true). One-shot: it exits and wakes you when mail arrives; `lab read` then prints the re-arm command, and nothing is missed in between. Not the Monitor tool (capped at 30 min). Arming twice is harmless.
-EOF
-  fi
+  echo '[lab] Live delivery: nothing to arm. A "lab mail" nudge from another session means run lab read; when you lab send something time-sensitive, make the SendMessage call it prints.'
 }
 
 cmd="${1:-}"; shift || true

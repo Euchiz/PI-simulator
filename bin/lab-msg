@@ -34,6 +34,33 @@ status: unread
 $body
 EOF
   echo "lab: message -> $to  ($(basename "$f"))"
+  wake_hint "$to" "$from" "$subj"
+}
+
+# The mail file is the durable record; it does not wake anyone. Waking is Claude Code's own
+# cross-session messaging (SendMessage): an idle session gets a new turn, a busy one reads it between
+# tool calls. A shell cannot send that -- the socket wire format is undocumented -- so print the exact
+# one-line call for the sending agent to make. Resolves the lab key to the Claude session name, which
+# is what SendMessage addresses. Stays silent if the recipient has no session (nothing to wake).
+wake_hint() {
+  local to="$1" from="$2" subj="$3" name
+  name="$(python3 - "$to" <<'PY2' 2>/dev/null
+import json,glob,os,re,sys
+k=sys.argv[1]
+pk=lambda s: re.sub(r"-+$","",re.sub(r"^-+","",re.sub(r"[^a-z0-9]+","-",(s or "").lower())))[:50]
+best=None
+for f in glob.glob(os.path.expanduser("~/.claude/jobs/*/state.json")):
+    try: d=json.load(open(f))
+    except Exception: continue
+    if pk(d.get("name",""))==k:
+        t=os.path.getmtime(f)
+        if best is None or t>best[0]: best=(t,d.get("name"))
+if best: print(best[1])
+PY2
+)"
+  [ -n "$name" ] || return 0
+  subj="${subj//\"/\'}"
+  echo "↪ wake them now (if it is time-sensitive):  SendMessage(to: \"$name\", message: \"lab mail from $from: $subj — run lab read\")"
 }
 
 cmd_broadcast() {
@@ -92,9 +119,6 @@ cmd_read() {
     local keep=""; for f in "$INBOX/$n"/*.md; do [ -e "$f" ] && keep+="$(basename "$f")"$'\n'; done
     printf '%s' "$keep" > "$INBOX/$n/.watch-announced"
   fi
-  if [ "$consume" = 1 ] && [ ! -f "$LAB_HOME/.watch-disabled" ]; then
-    echo "↻ re-arm live delivery: run  lab watch  as a BACKGROUND command (Bash, run_in_background: true)"
-  fi
   if [ "$any" != 1 ]; then echo "[$n] inbox empty"
   elif [ "$consume" = 0 ]; then
     echo "(peeked '$n' — NOT your inbox, so its mail is left UNREAD; only the owner's own \`lab read\` consumes it)"
@@ -129,6 +153,13 @@ watch_emit() {
 # Cheap by construction: one `ls` of ONE tiny inbox dir per poll, never a scan. ~/lab is NFS and
 # inotify is unreliable there, hence polling.
 cmd_watch() {
+  # RETIRED 2026-10-01. Claude Code caps both the Monitor tool and background commands, so no watcher
+  # can stay armed. Live wake-ups use Claude Code's own cross-session messaging (SendMessage) -- see
+  # wake_hint. Kept so an old instruction to arm it says so instead of silently waiting.
+  echo "lab watch: retired — nothing to arm. Read mail with: lab read. A 'lab mail' nudge from another session means run lab read."
+  return 0
+}
+_retired_cmd_watch() {
   ensure_init
   reconcile_self   # pick up a rename before we start watching an inbox
   local n; n="$(pkey "${1:-$(resolve_self || true)}")"

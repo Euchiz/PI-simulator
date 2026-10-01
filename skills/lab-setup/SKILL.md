@@ -1,6 +1,6 @@
 ---
 name: lab-setup
-description: Wire this session into the shared lab and verify the wiring is actually working — resolve/repair its lab identity, consume its inbox, ARM the live message watcher (a tool call no shell can make), load the aims tree, and self-check the lab system for drift, dead watchers, broken pointers and stalled queues. Use when a session starts blank or was force-stopped/restarted, or when asked to "set up the lab system", "re-setup", "self-check", "check the lab wiring", or "am I connected". Reports state only — it never proposes what to work on.
+description: Wire this session into the shared lab and verify the wiring is actually working — resolve/repair its lab identity, consume its inbox, load the aims tree, and self-check the lab system for drift, dead watchers, broken pointers and stalled queues. Use when a session starts blank or was force-stopped/restarted, or when asked to "set up the lab system", "re-setup", "self-check", "check the lab wiring", or "am I connected". Reports state only — it never proposes what to work on.
 ---
 
 # lab-setup
@@ -10,9 +10,8 @@ Get a session properly attached to the lab, then prove it is attached.
 **The problem this solves:** SessionStart already injects the aims tree, so a restarted session *looks*
 oriented. But two things it cannot do are exactly the two that break silently — a session whose job
 came back without its name has **no identity** (its `lab read` fails and its mail piles up unread), and
-the **watcher is never armed by a hook** (a shell cannot start a harness background task, so live delivery is off
-until an agent arms it). Both failures are invisible: the session feels fine and simply stops hearing
-from anyone.
+its inbox is never read mid-session unless it runs `lab read`. Both failures are invisible: the session
+feels fine and simply stops hearing from anyone.
 
 ## 1. Gather + repair identity
 
@@ -27,24 +26,13 @@ name:
 - If it is ambiguous, **ask the user which name this session owns** — guessing wrong steals another
   session's inbox, which is worse than asking.
 
-## 2. Arm live delivery — the step only the agent can take
+## 2. Live delivery — nothing to arm
 
-```
-Bash(command: "~/lab/bin/lab watch", run_in_background: true)
-```
-
-Run it as a **background** command — not the Monitor tool (Claude Code caps Monitor at 30 minutes,
-so an endless watcher expired and had to be re-armed every half hour). `lab watch` is one-shot: it
-waits, and when mail arrives it prints what came in and **exits** — which wakes you. Then:
-
-1. `lab read` to consume the mail — its last line is the re-arm command
-2. re-arm with the same command above
-
-Nothing is missed in between: re-arming fires **immediately** if mail landed while you were
-replying. Safe to repeat — a second arm in the same session just says "already armed".
-Always arm when this skill runs; a session with no waiter hears nothing until its next startup.
-
-> If `~/lab/.watch-disabled` exists, live delivery is switched OFF lab-wide: don't arm, `lab watch` exits at once anyway — just use `lab read`.
+There is no watcher any more (`lab watch` is retired; Claude Code caps background commands and
+Monitor). Mail lands in the lab inbox and `lab read` (step 1) already consumed it. Live wake-ups use
+Claude Code's own cross-session messaging: when another session sends you a "lab mail …" nudge,
+run `~/lab/bin/lab read`. When YOU `lab send` something time-sensitive, make the `SendMessage` call it
+prints. Do not start a watcher or a polling loop.
 
 ## 3. Self-check the lab system
 
@@ -53,7 +41,6 @@ Report anything that fails; stay quiet about what passes.
 | check | command | what is wrong if it fails |
 |---|---|---|
 | identity resolves | `lab name` | mail is queuing into nobody's inbox |
-| watcher holds a lock | `ls ~/lab/.watch/` then `kill -0 <pid>` | live delivery is off; mail only arrives at next startup |
 | deployed CLI matches source | `cd ~/PI-simulator && git fetch -q && git status -sb \| head -1`, then `for f in bin/*; do cmp -s "$f" ~/lab/bin/$(basename $f); done` | agents are running a stale `lab`; redeploy with `cp` |
 | scheduled work is running | `lab node status`, then `ls ~/lab/.host-cron/ \| grep "$(date +%F)"` | daily maintenance, the registries and the meeting cadence ride the **host job**, not cron — compute nodes have no crond. Today's stamps missing + host job down = nothing is refreshing. **Do NOT check `crontab` for maint entries — they were deliberately removed** |
 | external reviewers | `lab ext` | codex/agy down. Their keepalive is cron on a **login node**, so this cannot be fixed from the host job — it needs someone on a login node |
@@ -90,5 +77,5 @@ stands. If there is genuinely nothing in flight, stop after the report and wait.
 - The lab runs inside a Slurm allocation that **rotates**. `lab node status` says where it lives and
   how long is left; `lab node enter` opens a shell on it. Around 8h before the walltime ends every
   session gets a TOP-PRIORITY wrap-up message — that is the rotation, not an incident.
-- If this skill is invoked repeatedly in one session, steps 2 and 3 are still safe to repeat; step 1
+- If this skill is invoked repeatedly in one session, step 3 is still safe to repeat; step 1
   should be a no-op once identity resolves.

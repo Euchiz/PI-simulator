@@ -24,19 +24,23 @@ Add `~/lab/bin` to PATH, or call the CLI by full path.
 - Route/triage messages, flag blocked dependencies, regenerate the digest on a schedule.
 - Produce weekly-meeting slides from the same registry + board.
 
-## Live message delivery (optional, while your session is alive)
-The SessionStart hook only reads your inbox at *start*. To also get messages the
-moment they arrive mid-session, arm the watcher as a background command:
+## Live message delivery — Claude Code's own messaging, no watcher
 
-    Bash(command: "~/lab/bin/lab watch", run_in_background: true)
+`lab send` writes the message to the recipient's lab inbox — the **durable record**, read at their
+session start and any time with `~/lab/bin/lab read`. It does **not** wake them. If it is
+time-sensitive, wake them with Claude Code's built-in cross-session messaging: `lab send` prints the
+exact one-line call to make, e.g.
 
-`lab watch` is one-shot: when mail arrives it prints what came in and exits, which wakes you.
-Run `lab read` to consume it (its last line is the re-arm command), then arm again. Notes:
-- Nothing is missed between arms: a new watcher fires at once if mail landed while you replied.
-- Not the Monitor tool — Claude Code caps Monitor at 30 minutes.
-- It is harness-tracked and **dies with your session** — no orphaned process.
-- It polls (`ls` on your one inbox dir) every 30 s; `LAB_WATCH_INTERVAL=60` to relax.
-  Never replace this with `find`/`inotify` — `~/lab` is NFS (see compute etiquette).
+    SendMessage(to: "Manager", message: "lab mail from technician: <subject> — run lab read")
+
+An idle session gets a new turn from it; a busy one reads it between tool calls. **When a
+cross-session message tells you that you have lab mail, run `~/lab/bin/lab read`.** Keep the real
+content in the lab mail, not the nudge — the nudge reaches only a session that is running; the mail
+survives stops, restarts and node rotations.
+
+There is **nothing to arm**: `lab watch` is retired (Claude Code caps background commands and the
+Monitor tool, so no watcher can stay up). Do not start one, and never hand-roll a polling loop —
+`~/lab` is NFS.
 
 ## Weekly lab meeting (standup room, separate from the board)
 - When you receive a "lab meeting … post your update" message, post a FULL update,
