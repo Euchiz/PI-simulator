@@ -556,7 +556,7 @@ cmd_startup() {
 EOF
   # Live delivery can be switched off lab-wide by $LAB_HOME/.watch-disabled (see lab-msg cmd_watch).
   if [ -f "$LAB_HOME/.watch-disabled" ]; then
-    echo "[lab] Live message delivery is DISABLED lab-wide for now — do NOT arm `lab watch`. Check mail with: lab read"
+    echo "[lab] Live message delivery is DISABLED lab-wide for now — do NOT arm lab watch. Check mail with: lab read"
   else
     cat <<'EOF'
 [lab] (Re-)arm live message delivery now — Bash(command: "~/lab/bin/lab watch", run_in_background: true). One-shot: it exits and wakes you when mail arrives; `lab read` then prints the re-arm command, and nothing is missed in between. Not the Monitor tool (capped at 30 min). Arming twice is harmless.
